@@ -19,6 +19,7 @@ import numpy as np
 from runmlpacketdelay import run_mlpacketdelay_training
 from model.mliterationtime import IterationTimeModelRegistry
 from model.mleventtime import EventTimeModel
+from model.mlflowcontrol import flow_control_from_env
 import csv
 import io
 import pickle
@@ -228,10 +229,13 @@ class ScopedEventTimeModelRegistry:
 
 iteration_time_models = IterationTimeModelRegistry(**ITERATION_MODEL_KWARGS)
 event_time_models = ScopedEventTimeModelRegistry(EVENT_TIME_MODEL_KWARGS)
+flow_control_model = flow_control_from_env()
 
 event_time_model = event_time_models.get()
 iteration_model_path = os.environ.get("ZMQML_ITERATION_MODEL_PATH", "").strip()
 event_time_model_path = os.environ.get("ZMQML_EVENT_TIME_MODEL_PATH", "").strip()
+flow_control_model_path = os.environ.get("ZMQML_FLOW_CONTROL_MODEL_PATH", "").strip()
+flow_control_record_log_path = os.environ.get("ZMQML_FLOW_CONTROL_RECORD_LOG_PATH", "").strip()
 event_time_record_log_path = os.environ.get("ZMQML_EVENT_TIME_RECORD_LOG_PATH", "").strip()
 record_log_path = os.environ.get("ZMQML_RECORD_LOG_PATH", "").strip()
 record_format = os.environ.get("ZMQML_RECORD_FORMAT", "app_id,client,iteration,value").strip()
@@ -243,6 +247,7 @@ auto_train_on_records = os.environ.get(
 
 iteration_model_version = 0
 event_time_model_version = 0
+flow_control_model_version = 0
 
 EVENT_TIME_RECORD_HEADER = (
     "schema_version,sample_id,now,current_lp_gid,current_lp_type,"
@@ -265,6 +270,14 @@ if event_time_model_path:
     event_time_model_version = 1
     print(
         f"[zmqmlserver] loaded event-time model(s): {event_time_model_path}",
+        flush=True,
+    )
+
+if flow_control_model_path:
+    flow_control_model.load(flow_control_model_path)
+    flow_control_model_version = 1
+    print(
+        f"[zmqmlserver] loaded flow-control model: {flow_control_model_path}",
         flush=True,
     )
 
@@ -1001,6 +1014,158 @@ def _real_command_args(args):
 
 
 
+
+
+def append_flow_control_record_log(payload: str) -> None:
+    if not flow_control_record_log_path or not payload.strip():
+        return
+
+    out_path = Path(flow_control_record_log_path)
+    if out_path.parent:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    file_has_content = out_path.exists() and out_path.stat().st_size > 0
+    lines = payload.strip().splitlines()
+    if file_has_content and lines and lines[0].startswith("schema_version,"):
+        lines = lines[1:]
+
+    with out_path.open("a") as f:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            f.write(line)
+            f.write("\n")
+
+
+def receive_flow_control_records(args, bindata):
+    st = time.time()
+    raw_payload = bindata.decode("utf-8", errors="replace").strip()
+    try:
+        loaded_rows = flow_control_model.add_records_text(raw_payload)
+        if loaded_rows > 0:
+            append_flow_control_record_log(raw_payload)
+            if auto_train_on_records:
+                flow_control_model.train_or_update()
+        director_debug(
+            f"[flow-control records] loaded_rows={loaded_rows} "
+            f"status={flow_control_model.status()}"
+        )
+        return ("done", time.time() - st, loaded_rows)
+    except Exception as exc:
+        return ("failed", time.time() - st, 0, str(exc))
+
+
+def load_flow_control_records_csv_command(args):
+    st = time.time()
+    real_args = _real_command_args(args)
+    if not real_args:
+        return {"status": "failed", "et": str(time.time() - st), "error": "missing CSV path"}
+
+    path = Path(real_args[0])
+    if not path.exists():
+        return {
+            "status": "failed",
+            "et": str(time.time() - st),
+            "error": f"flow-control records path does not exist: {path}",
+        }
+
+    try:
+        loaded_rows = flow_control_model.load_records_csv(path)
+    except Exception as exc:
+        return {"status": "failed", "et": str(time.time() - st), "error": str(exc)}
+
+    ret = {"status": "done", "et": str(time.time() - st), "path": str(path), "loaded_rows": str(loaded_rows)}
+    ret.update(flow_control_model.status())
+    return ret
+
+
+def train_flow_control_model_command(args):
+    global flow_control_model_version
+    st = time.time()
+    trained = flow_control_model.train_or_update()
+    if trained:
+        flow_control_model_version += 1
+    ret = {
+        "status": "done" if trained else "failed",
+        "et": str(time.time() - st),
+        "model_version": str(flow_control_model_version),
+    }
+    ret.update(flow_control_model.status())
+    if not trained:
+        ret["error"] = "flow-control model was not trained; load records first"
+    print(
+        f"[flow-control model-train-command] trained={int(trained)} "
+        f"model_version={flow_control_model_version} status={flow_control_model.status()}",
+        flush=True,
+    )
+    return ret
+
+
+def save_flow_control_model_command(args):
+    st = time.time()
+    real_args = _real_command_args(args)
+    if not real_args:
+        return {"status": "failed", "et": str(time.time() - st), "error": "missing output model path"}
+    model_path = Path(real_args[0])
+    try:
+        flow_control_model.save(model_path)
+    except Exception as exc:
+        return {"status": "failed", "et": str(time.time() - st), "error": str(exc)}
+    return {
+        "status": "done",
+        "et": str(time.time() - st),
+        "path": str(model_path),
+        "model_version": str(flow_control_model_version),
+    }
+
+
+def load_flow_control_model_command(args):
+    global flow_control_model_version
+    st = time.time()
+    real_args = _real_command_args(args)
+    if not real_args:
+        return {"status": "failed", "et": str(time.time() - st), "error": "missing input model path"}
+    model_path = Path(real_args[0])
+    if not model_path.exists():
+        return {
+            "status": "failed",
+            "et": str(time.time() - st),
+            "error": f"model path does not exist: {model_path}",
+        }
+    try:
+        flow_control_model.load(model_path)
+    except Exception as exc:
+        return {"status": "failed", "et": str(time.time() - st), "error": str(exc)}
+    flow_control_model_version += 1
+    return {
+        "status": "done",
+        "et": str(time.time() - st),
+        "path": str(model_path),
+        "model_version": str(flow_control_model_version),
+    }
+
+
+def flow_control_model_status_command(args):
+    st = time.time()
+    ret = {"status": "done", "et": str(time.time() - st), "model_version": str(flow_control_model_version)}
+    ret.update(flow_control_model.status())
+    return ret
+
+
+def launch_flow_control_inferencing(args, bindata):
+    st = time.time()
+    payload = bindata.decode("utf-8", errors="replace").strip()
+    try:
+        predictions = flow_control_model.predict_from_text(payload)
+        predictions_str = " ".join(
+            f"{key}:{float(value)}" for key, value in sorted(predictions.items())
+        )
+        director_debug(f"[flow-control inference] predictions={predictions_str}")
+        return ("done", time.time() - st, predictions_str)
+    except Exception as exc:
+        return ("failed", time.time() - st, str(exc))
+
 def train_iteration_time_model_command(args):
     global iteration_model_version
 
@@ -1284,7 +1449,7 @@ def director_request_command(msg, bindata):
 
         {
             "cmd": "director-request",
-            "surrogate_family": "iteration-time" | "event-time",
+            "surrogate_family": "iteration-time" | "event-time" | "flow-control",
             "surrogate_backend": "...",
             "operation": "send-records" | "inference" | "train-model" |
                          "save-model" | "load-model" | "load-records-csv" |
@@ -1324,6 +1489,30 @@ def director_request_command(msg, bindata):
             return load_iteration_records_csv_command(args)
         if operation == "model-status":
             return iteration_time_model_status_command(args)
+
+
+    if family in ("flow-control", "flow_control", "flow"):
+        if operation == "send-records":
+            status, et, loaded_rows, *extra = receive_flow_control_records(args, bindata)
+            ret = {"status": status, "et": str(et), "loaded_rows": str(loaded_rows)}
+            if extra:
+                ret["error"] = str(extra[0])
+            return ret
+        if operation == "inference":
+            status, et, predictions = launch_flow_control_inferencing(args, bindata)
+            if status != "done":
+                return {"status": status, "et": str(et), "error": predictions}
+            return {"status": status, "et": str(et), "predictions": predictions}
+        if operation == "train-model":
+            return train_flow_control_model_command(args)
+        if operation == "save-model":
+            return save_flow_control_model_command(args)
+        if operation == "load-model":
+            return load_flow_control_model_command(args)
+        if operation == "load-records-csv":
+            return load_flow_control_records_csv_command(args)
+        if operation == "model-status":
+            return flow_control_model_status_command(args)
 
     if family == "event-time":
         if operation == "send-records":

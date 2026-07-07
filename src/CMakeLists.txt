@@ -206,6 +206,9 @@ add_executable(model-net-synthetic network-workloads/model-net-synthetic.c)
 add_executable(model-net-synthetic-slimfly network-workloads/model-net-synthetic-slimfly.c)
 add_executable(model-net-synthetic-fattree network-workloads/model-net-synthetic-fattree.c)
 add_executable(model-net-synthetic-dragonfly-all network-workloads/model-net-synthetic-dragonfly-all.c)
+if(USE_ZEROMQ)
+    add_executable(model-net-flow-control-simplep2p network-workloads/model-net-flow-control-simplep2p.cxx)
+endif()
 
 set(CODES_TARGETS
     topology-test
@@ -215,6 +218,10 @@ set(CODES_TARGETS
     model-net-synthetic-fattree
     model-net-synthetic-dragonfly-all
 )
+
+if(USE_ZEROMQ)
+    list(APPEND CODES_TARGETS model-net-flow-control-simplep2p)
+endif()
 
 if(USE_DUMPI)
     list(APPEND CODES_TARGETS codes-workload-dump)
