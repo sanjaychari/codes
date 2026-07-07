@@ -74,9 +74,6 @@ def main() -> int:
     records = sub.add_parser("load-records", help="Load Director surrogate records from CSV")
     records.add_argument("path", help="Input records CSV path")
 
-    infer_json = sub.add_parser("infer-json", help="Run inference from a JSON payload file")
-    infer_json.add_argument("path", help="Input JSON payload path, or '-' for stdin")
-
     sub.add_parser("exit", help="Ask server to exit")
 
     args = parser.parse_args()
@@ -124,20 +121,6 @@ def main() -> int:
             "director-request",
             [args.path],
             operation="load-records-csv",
-            **director_meta,
-        )
-    elif args.command == "infer-json":
-        if args.path == "-":
-            bindata = sys.stdin.buffer.read()
-        else:
-            with open(args.path, "rb") as f:
-                bindata = f.read()
-        resp = request(
-            args.endpoint,
-            "director-request",
-            [],
-            bindata=bindata,
-            operation="inference",
             **director_meta,
         )
     elif args.command == "exit":
