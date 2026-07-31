@@ -394,7 +394,8 @@ struct switch_state {
      * space. SWITCH_EGRESS_LATE transmits them with capacity left after the
      * early residual-queue pass and buffers only their unsent remainder.
      */
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT> staged_arrivals[MAX_PORTS_PER_SWITCH];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>
+        staged_arrivals[MAX_PORTS_PER_SWITCH];
     fixed_vector<switch_rate_flow, MAX_FLOW_ENTRIES_PER_PORT> rate_flows[MAX_PORTS_PER_SWITCH];
 
     /*
@@ -1338,10 +1339,11 @@ static int find_terminal_port(const switch_state* ns, int dst_terminal) {
 static double queued_mbit_on_switch(const switch_state* ns);
 
 static double enqueue_fluid_segment(switch_state* ns, int port_id, const fluid_msg* m,
-                              double* port_queued_before_out, double* shared_queued_before_out,
-                              double* shared_queued_after_out, double* dropped_out,
-                              double* fluid_segment_remaining_after_out, int* coalesced_out,
-                              int* queue_index_out) {
+                                    double* port_queued_before_out,
+                                    double* shared_queued_before_out,
+                                    double* shared_queued_after_out, double* dropped_out,
+                                    double* fluid_segment_remaining_after_out, int* coalesced_out,
+                                    int* queue_index_out) {
     if (port_queued_before_out != NULL) {
         *port_queued_before_out = 0.0;
     }
@@ -1477,8 +1479,8 @@ static double enqueue_fluid_segment(switch_state* ns, int port_id, const fluid_m
 }
 
 static double stage_fluid_segment_arrival(switch_state* ns, int port_id, const fluid_msg* m,
-                                    int* coalesced_out, int* queue_index_out,
-                                    double* staged_remaining_after_out) {
+                                          int* coalesced_out, int* queue_index_out,
+                                          double* staged_remaining_after_out) {
     if (coalesced_out != NULL) {
         *coalesced_out = 0;
     }
@@ -1493,7 +1495,8 @@ static double stage_fluid_segment_arrival(switch_state* ns, int port_id, const f
         return 0.0;
     }
 
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged = ns->staged_arrivals[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged =
+        ns->staged_arrivals[port_id];
     for (int i = 0; i < staged.size(); ++i) {
         queued_fluid_segment& q = staged[i];
         if (!q.valid) {
@@ -1585,7 +1588,7 @@ static int active_fluid_segment_count_on_port(const switch_state* ns, int port_i
 }
 
 static int find_queue_index_for_fluid_segment(const switch_state* ns, int port_id,
-                                        const queued_fluid_segment& needle) {
+                                              const queued_fluid_segment& needle) {
     if (port_id < 0 || port_id >= ns->num_ports) {
         return -1;
     }
@@ -1597,8 +1600,7 @@ static int find_queue_index_for_fluid_segment(const switch_state* ns, int port_i
             continue;
         }
 
-        if (qv[i].flow_id == needle.flow_id &&
-            qv[i].source_terminal == needle.source_terminal &&
+        if (qv[i].flow_id == needle.flow_id && qv[i].source_terminal == needle.source_terminal &&
             qv[i].destination_terminal == needle.destination_terminal &&
             qv[i].creation_interval == needle.creation_interval &&
             qv[i].ingress_id == needle.ingress_id) {
@@ -1635,7 +1637,8 @@ static void compact_staged_arrivals(switch_state* ns, int port_id) {
     if (port_id < 0 || port_id >= ns->num_ports) {
         return;
     }
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged = ns->staged_arrivals[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged =
+        ns->staged_arrivals[port_id];
     staged.erase(std::remove_if(staged.begin(), staged.end(),
                                 [](const queued_fluid_segment& q) {
                                     return !q.valid || q.remaining_mbit <= EPS;
@@ -1724,21 +1727,21 @@ static void append_switch_log(int interval_id, const char* event_name, int switc
     append_log_row(cfg.switch_log_path, &switch_log_buffer, row.str());
 }
 
-static void append_fluid_segment_log(int interval_id, const char* event_name, int switch_id, int port_id,
-                               int target_is_terminal, int target_index,
-                               unsigned long long flow_id, int source_terminal,
-                               int destination_terminal, int creation_interval,
-                               double capacity_mbit, double queued_before_mbit, double send_mbit,
-                               double remaining_after_mbit, double dropped_mbit) {
+static void append_fluid_segment_log(int interval_id, const char* event_name, int switch_id,
+                                     int port_id, int target_is_terminal, int target_index,
+                                     unsigned long long flow_id, int source_terminal,
+                                     int destination_terminal, int creation_interval,
+                                     double capacity_mbit, double queued_before_mbit,
+                                     double send_mbit, double remaining_after_mbit,
+                                     double dropped_mbit) {
     std::ostringstream row;
     row << interval_id << ',' << event_name << ',' << switch_id << ',' << switches[switch_id].name
         << ',' << port_id << ',' << (target_is_terminal ? "terminal" : "switch") << ','
-        << target_index << ',' << flow_id << ',' << source_terminal << ','
-        << destination_terminal << ',' << creation_interval << ','
-        << (interval_id - creation_interval) << ',' << to_output_data_unit(capacity_mbit) << ','
-        << to_output_data_unit(queued_before_mbit) << ',' << to_output_data_unit(send_mbit) << ','
-        << to_output_data_unit(remaining_after_mbit) << ',' << to_output_data_unit(dropped_mbit)
-        << '\n';
+        << target_index << ',' << flow_id << ',' << source_terminal << ',' << destination_terminal
+        << ',' << creation_interval << ',' << (interval_id - creation_interval) << ','
+        << to_output_data_unit(capacity_mbit) << ',' << to_output_data_unit(queued_before_mbit)
+        << ',' << to_output_data_unit(send_mbit) << ',' << to_output_data_unit(remaining_after_mbit)
+        << ',' << to_output_data_unit(dropped_mbit) << '\n';
     append_log_row(cfg.fluid_segment_log_path, &fluid_segment_log_buffer, row.str());
 }
 
@@ -2214,7 +2217,8 @@ static void handle_ethernet_pause_eval(switch_state* ns, fluid_msg* m, tw_lp* lp
 
 static void schedule_arrival(int interval_id, tw_lpid dst_gid, const fluid_msg* src_msg,
                              double mbit, tw_lp* lp) {
-    tw_event* e = tw_event_new(dst_gid, delay_until_ns(interval_id, PHASE_FLUID_SEGMENT_ARRIVAL, lp), lp);
+    tw_event* e =
+        tw_event_new(dst_gid, delay_until_ns(interval_id, PHASE_FLUID_SEGMENT_ARRIVAL, lp), lp);
     fluid_msg* m = (fluid_msg*)tw_event_data(e);
     memset(m, 0, sizeof(*m));
     m->event_type = FLUID_SEGMENT_ARRIVAL;
@@ -2520,20 +2524,20 @@ static void log_switch_arrival_event(const switch_state* ns, const fluid_msg* m)
                           0.0, m->rc_log_shared_queued_before_mbit,
                           m->rc_log_shared_queued_after_mbit, ns->shared_buffer_mbit,
                           m->rc_dropped_mbit, 0);
-        append_fluid_segment_log(m->interval_id, "drop_no_route", ns->switch_id, -1, 0, -1, m->flow_id,
-                           m->source_terminal, m->destination_terminal, m->creation_interval, 0.0,
-                           0.0, 0.0, 0.0, m->rc_dropped_mbit);
+        append_fluid_segment_log(m->interval_id, "drop_no_route", ns->switch_id, -1, 0, -1,
+                                 m->flow_id, m->source_terminal, m->destination_terminal,
+                                 m->creation_interval, 0.0, 0.0, 0.0, 0.0, m->rc_dropped_mbit);
         return;
     }
 
     if (m->rc_accepted_mbit > EPS) {
         append_fluid_segment_log(m->interval_id,
-                           m->rc_coalesced ? "stage_arrival_coalesce" : "stage_arrival",
-                           ns->switch_id, m->rc_port_id, m->rc_log_target_is_terminal,
-                           m->rc_log_target_index, m->flow_id, m->source_terminal,
-                           m->destination_terminal, m->creation_interval, m->rc_log_capacity_mbit,
-                           m->rc_log_port_queued_before_mbit, 0.0,
-                           m->rc_log_fluid_segment_remaining_after_mbit, 0.0);
+                                 m->rc_coalesced ? "stage_arrival_coalesce" : "stage_arrival",
+                                 ns->switch_id, m->rc_port_id, m->rc_log_target_is_terminal,
+                                 m->rc_log_target_index, m->flow_id, m->source_terminal,
+                                 m->destination_terminal, m->creation_interval,
+                                 m->rc_log_capacity_mbit, m->rc_log_port_queued_before_mbit, 0.0,
+                                 m->rc_log_fluid_segment_remaining_after_mbit, 0.0);
     }
 }
 
@@ -2552,30 +2556,30 @@ static void log_switch_egress_event(const switch_state* ns, const fluid_msg* m) 
 
         if (rc->send_mbit > EPS) {
             append_fluid_segment_log(m->interval_id,
-                               rc->source_is_staged ? "allocate_send_arrival"
-                                                    : "allocate_send_buffered",
-                               ns->switch_id, m->port_id, m->rc_log_target_is_terminal,
-                               m->rc_log_target_index, rc->before.flow_id,
-                               rc->before.source_terminal, rc->before.destination_terminal,
-                               rc->before.creation_interval, m->rc_log_capacity_mbit,
-                               m->rc_log_port_queued_before_mbit, rc->send_mbit, remaining_after,
-                               0.0);
+                                     rc->source_is_staged ? "allocate_send_arrival"
+                                                          : "allocate_send_buffered",
+                                     ns->switch_id, m->port_id, m->rc_log_target_is_terminal,
+                                     m->rc_log_target_index, rc->before.flow_id,
+                                     rc->before.source_terminal, rc->before.destination_terminal,
+                                     rc->before.creation_interval, m->rc_log_capacity_mbit,
+                                     m->rc_log_port_queued_before_mbit, rc->send_mbit,
+                                     remaining_after, 0.0);
         }
         if (rc->buffered_mbit > EPS) {
             append_fluid_segment_log(m->interval_id, "enqueue_residual", ns->switch_id, m->port_id,
-                               m->rc_log_target_is_terminal, m->rc_log_target_index,
-                               rc->before.flow_id, rc->before.source_terminal,
-                               rc->before.destination_terminal, rc->before.creation_interval,
-                               m->rc_log_capacity_mbit, m->rc_log_port_queued_before_mbit, 0.0,
-                               rc->buffered_mbit, 0.0);
+                                     m->rc_log_target_is_terminal, m->rc_log_target_index,
+                                     rc->before.flow_id, rc->before.source_terminal,
+                                     rc->before.destination_terminal, rc->before.creation_interval,
+                                     m->rc_log_capacity_mbit, m->rc_log_port_queued_before_mbit,
+                                     0.0, rc->buffered_mbit, 0.0);
         }
         if (rc->dropped_mbit > EPS) {
             append_fluid_segment_log(m->interval_id, "drop_shared_buffer_overflow", ns->switch_id,
-                               m->port_id, m->rc_log_target_is_terminal, m->rc_log_target_index,
-                               rc->before.flow_id, rc->before.source_terminal,
-                               rc->before.destination_terminal, rc->before.creation_interval,
-                               m->rc_log_capacity_mbit, m->rc_log_port_queued_before_mbit, 0.0, 0.0,
-                               rc->dropped_mbit);
+                                     m->port_id, m->rc_log_target_is_terminal,
+                                     m->rc_log_target_index, rc->before.flow_id,
+                                     rc->before.source_terminal, rc->before.destination_terminal,
+                                     rc->before.creation_interval, m->rc_log_capacity_mbit,
+                                     m->rc_log_port_queued_before_mbit, 0.0, 0.0, rc->dropped_mbit);
         }
     }
 
@@ -3758,8 +3762,8 @@ static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
             ? (ns->staged_arrivals[port_id])[prior_staged_index].final_segment_sent
             : 0;
 
-    double staged_mbit =
-        stage_fluid_segment_arrival(ns, port_id, m, &coalesced, &queue_index, &staged_remaining_after);
+    double staged_mbit = stage_fluid_segment_arrival(ns, port_id, m, &coalesced, &queue_index,
+                                                     &staged_remaining_after);
 
     m->rc_queue_index = queue_index;
     m->rc_coalesced = coalesced;
@@ -3784,8 +3788,9 @@ static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
 }
 
 
-static void send_fluid_segment_fragment(switch_state* ns, int port_id, const queued_fluid_segment* q,
-                                  double send_mbit, int interval_id, tw_lp* lp) {
+static void send_fluid_segment_fragment(switch_state* ns, int port_id,
+                                        const queued_fluid_segment* q, double send_mbit,
+                                        int interval_id, tw_lp* lp) {
     if (send_mbit <= EPS) {
         return;
     }
@@ -3840,9 +3845,11 @@ static void handle_switch_egress(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     port_desc* p = &ns->ports[port_id];
     const int rate_active_before = active_rate_flow_count_on_port(ns, port_id);
     fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& qv = ns->queues[port_id];
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged = ns->staged_arrivals[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged =
+        ns->staged_arrivals[port_id];
     const bool service_staged = (m->event_type == SWITCH_EGRESS_LATE);
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& source = service_staged ? staged : qv;
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& source =
+        service_staged ? staged : qv;
 
     m->rc_prev_capacity_accounting_interval = ns->capacity_accounting_interval[port_id];
     m->rc_prev_capacity_used_mbit = ns->capacity_used_mbit[port_id];
@@ -4003,7 +4010,8 @@ static void handle_switch_egress(switch_state* ns, fluid_msg* m, tw_lp* lp) {
                 residual_msg.mbit = residual;
                 residual_msg.rc_ingress_id = before.ingress_id;
 
-                const int prior_residual_index = find_queue_index_for_fluid_segment(ns, port_id, before);
+                const int prior_residual_index =
+                    find_queue_index_for_fluid_segment(ns, port_id, before);
                 rc->residual_prev_final_segment_sent =
                     prior_residual_index >= 0
                         ? (ns->queues[port_id])[prior_residual_index].final_segment_sent
@@ -4018,8 +4026,9 @@ static void handle_switch_egress(switch_state* ns, fluid_msg* m, tw_lp* lp) {
                 int residual_queue_index = -1;
                 double buffered =
                     enqueue_fluid_segment(ns, port_id, &residual_msg, &ignored_port_before,
-                                    &ignored_shared_before, &ignored_shared_after, &dropped,
-                                    &ignored_remaining_after, &coalesced, &residual_queue_index);
+                                          &ignored_shared_before, &ignored_shared_after, &dropped,
+                                          &ignored_remaining_after, &coalesced,
+                                          &residual_queue_index);
 
                 rc->buffered_mbit = buffered;
                 rc->dropped_mbit = dropped;
@@ -4143,7 +4152,8 @@ static void rollback_switch_arrival(switch_state* ns, fluid_msg* m) {
         return;
     }
 
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged = ns->staged_arrivals[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged =
+        ns->staged_arrivals[port_id];
 
     int idx = m->rc_queue_index;
     if (idx < 0 || idx >= (int)staged.size() || staged[idx].flow_id != m->flow_id) {
@@ -4151,7 +4161,8 @@ static void rollback_switch_arrival(switch_state* ns, fluid_msg* m) {
     }
 
     if (idx < 0) {
-        tw_error(TW_LOC, "could not find fluid segment %llu on switch %d port %d during arrival rollback",
+        tw_error(TW_LOC,
+                 "could not find fluid segment %llu on switch %d port %d during arrival rollback",
                  (unsigned long long)m->flow_id, ns->switch_id, port_id);
     }
 
@@ -4160,10 +4171,10 @@ static void rollback_switch_arrival(switch_state* ns, fluid_msg* m) {
         staged[idx].final_segment_sent = m->rc_prev_final_segment_sent;
 
         if (staged[idx].remaining_mbit <= EPS) {
-            tw_error(
-                TW_LOC,
-                "coalesced fluid segment %llu became empty during arrival rollback on switch %d port %d",
-                (unsigned long long)m->flow_id, ns->switch_id, port_id);
+            tw_error(TW_LOC,
+                     "coalesced fluid segment %llu became empty during arrival rollback on switch "
+                     "%d port %d",
+                     (unsigned long long)m->flow_id, ns->switch_id, port_id);
         }
     } else {
         staged.erase(staged.begin() + idx);
@@ -4212,7 +4223,8 @@ static void rollback_switch_egress(switch_state* ns, fluid_msg* m) {
     ns->capacity_accounting_interval[port_id] = m->rc_prev_capacity_accounting_interval;
     ns->capacity_used_mbit[port_id] = m->rc_prev_capacity_used_mbit;
     fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& qv = ns->queues[port_id];
-    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged = ns->staged_arrivals[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& staged =
+        ns->staged_arrivals[port_id];
     const port_desc* p = &ns->ports[port_id];
 
     /*
@@ -4579,9 +4591,10 @@ static void write_log_headers(int rank) {
 
     std::ostringstream fluid_segment_header;
     fluid_segment_header << "interval,event,switch,switch_name,port,target_type,target_index,"
-                   << "flow_id,source_terminal,destination_terminal,creation_interval,"
-                   << "age_intervals,capacity_" << unit << ",queued_before_" << unit << ",send_"
-                   << unit << ",remaining_after_" << unit << ",dropped_" << unit << '\n';
+                         << "flow_id,source_terminal,destination_terminal,creation_interval,"
+                         << "age_intervals,capacity_" << unit << ",queued_before_" << unit
+                         << ",send_" << unit << ",remaining_after_" << unit << ",dropped_" << unit
+                         << '\n';
     write_log_header_file(cfg.fluid_segment_log_path, fluid_segment_header.str().c_str());
 }
 
