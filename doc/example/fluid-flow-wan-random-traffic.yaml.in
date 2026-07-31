@@ -59,4 +59,4 @@ sections:
 
     terminal_log_path: logs/terminal-events.csv
     switch_log_path: logs/switch-events.csv
-    flowlet_log_path: logs/flowlet-events.csv
+    fluid_segment_log_path: logs/fluid-segment-events.csv

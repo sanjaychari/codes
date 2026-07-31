@@ -40,7 +40,7 @@ run_case() {
     grep "egress_model=$mode" "$artifacts/$mode.out"
     test -s "$workdir/logs/terminal-events.csv"
     test -s "$workdir/logs/switch-events.csv"
-    test -s "$workdir/logs/flowlet-events.csv"
+    test -s "$workdir/logs/fluid-segment-events.csv"
 }
 
 make_case pdes
@@ -61,7 +61,7 @@ statistical_events=$(awk '/Net Events Processed/{value=$NF} END{print value}' \
     "$artifacts/statistical.out")
 [[ -n "$pdes_events" && "$pdes_events" == "$statistical_events" ]]
 
-for csv in terminal-events.csv switch-events.csv flowlet-events.csv; do
+for csv in terminal-events.csv switch-events.csv fluid-segment-events.csv; do
     {
         head -n 1 "$artifacts/pdes/logs/$csv"
         tail -n +2 "$artifacts/pdes/logs/$csv" | sort

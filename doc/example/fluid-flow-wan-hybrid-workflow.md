@@ -28,10 +28,10 @@ predicted_egress_mbit =
     output_paused ? 0 : min(remaining_capacity_mbit, eligible_data_mbit)
 ```
 
-`SWITCH_EGRESS_EARLY` considers only previously buffered residual flowlets.
+`SWITCH_EGRESS_EARLY` considers only previously buffered residual fluid segments.
 `SWITCH_EGRESS_LATE` considers only current-interval staged arrivals and uses
 capacity left by the early phase. The switch LP then distributes the returned
-phase volume among eligible flowlets using deterministic max-min service.
+phase volume among eligible fluid segments using deterministic max-min service.
 
 The statistical model requires no record collection or training. A separate
 server-side analytical model instance is selected by switch ID. In the current

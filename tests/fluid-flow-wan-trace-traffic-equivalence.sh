@@ -51,7 +51,7 @@ canonicalize_csv() {
     (( row_count >= 2 )) || { echo "committed CSV log has no data rows: $input"; return 1; }
 }
 
-for csv in terminal-events.csv switch-events.csv flowlet-events.csv; do
+for csv in terminal-events.csv switch-events.csv fluid-segment-events.csv; do
     canonicalize_csv "$seq_case/logs/$csv" "$comparison_dir/sequential-$csv"
     canonicalize_csv "$opt_case/logs/$csv" "$comparison_dir/optimistic-$csv"
     if ! diff -u "$comparison_dir/sequential-$csv" "$comparison_dir/optimistic-$csv"; then

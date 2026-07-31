@@ -74,7 +74,7 @@ canonicalize_csv() {
 csv_logs=(
     terminal-events.csv
     switch-events.csv
-    flowlet-events.csv
+    fluid-segment-events.csv
 )
 
 for csv in "${csv_logs[@]}"; do
