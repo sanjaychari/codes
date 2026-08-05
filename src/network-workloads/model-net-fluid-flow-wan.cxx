@@ -344,6 +344,14 @@ struct switch_rate_flow {
     int destination_terminal;
     int ingress_id;
     int final_segment_seen;
+    /*
+     * A proactive FLOW_RATE_REGISTER creates this entry before data arrives.
+     * Non-destination switches keep the flow inactive until feedback from the
+     * next hop establishes its downstream constraint.  This prevents an
+     * attached switch from advertising a premature access/local-link rate to
+     * the source before the complete path has been registered.
+     */
+    int rate_ready;
     double downstream_rate_mbps;
     int downstream_rate_epoch;
 
@@ -444,6 +452,7 @@ enum fluid_event_type {
     SWITCH_RATE_EVAL = 8,
     SWITCH_RATE_FEEDBACK = 9,
     TERMINAL_RATE_UPDATE = 10,
+    FLOW_RATE_REGISTER = 11,
 };
 
 static const char* backpressure_event_name(int event_type) {
@@ -458,6 +467,8 @@ static const char* backpressure_event_name(int event_type) {
         return "SWITCH_RATE_FEEDBACK";
     case TERMINAL_RATE_UPDATE:
         return "TERMINAL_RATE_UPDATE";
+    case FLOW_RATE_REGISTER:
+        return "FLOW_RATE_REGISTER";
     default:
         return NULL;
     }
@@ -1845,6 +1856,33 @@ static void schedule_terminal_send(int interval_id, tw_lp* lp) {
     tw_event_send(e);
 }
 
+static void schedule_flow_rate_register(int interval_id, int destination_switch,
+                                        int source_switch, int source_terminal,
+                                        int destination_terminal, unsigned long long flow_id,
+                                        int creation_interval, tw_lp* lp) {
+    const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
+    if (interval_id < 0 || interval_id >= total_intervals) {
+        return;
+    }
+    if (destination_switch < 0 || destination_switch >= total_switch_lps) {
+        tw_error(TW_LOC, "invalid flow-rate registration destination switch %d",
+                 destination_switch);
+    }
+
+    tw_event* e =
+        tw_event_new(get_switch_gid(destination_switch), backpressure_delay_ns(), lp);
+    fluid_msg* m = (fluid_msg*)tw_event_data(e);
+    memset(m, 0, sizeof(*m));
+    m->event_type = FLOW_RATE_REGISTER;
+    m->interval_id = interval_id;
+    m->source_switch = source_switch;
+    m->source_terminal = source_terminal;
+    m->destination_terminal = destination_terminal;
+    m->flow_id = flow_id;
+    m->creation_interval = creation_interval;
+    tw_event_send(e);
+}
+
 static void schedule_switch_rate_eval(int interval_id, int port_id, tw_lp* lp) {
     const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
     if (interval_id < 0 || interval_id >= total_intervals) {
@@ -2620,7 +2658,13 @@ static void handle_random_workload_generate(terminal_state* ns, fluid_msg* m, tw
         flow.remaining_source_mbit = total_mbit;
         flow.pending_window_mbit = 0.0;
         flow.send_start_time_ns = event_time_ns(interval, PHASE_TERMINAL_SEND);
-        flow.current_send_rate_mbps = cached_initial_rate_mbps(ns, dst);
+        /*
+         * Do not transmit at the access-link rate while the path is unknown.
+         * FLOW_RATE_REGISTER establishes the flow on every switch and the
+         * existing feedback path installs the first usable rate during this
+         * same transmit window.
+         */
+        flow.current_send_rate_mbps = 0.0;
         flow.rate_epoch = -1;
         flow.workload_complete = 1;
 
@@ -2640,6 +2684,9 @@ static void handle_random_workload_generate(terminal_state* ns, fluid_msg* m, tw
         m->destination_terminal = dst;
         m->flow_id = flow.flow_id;
         m->mbit = total_mbit;
+
+        schedule_flow_rate_register(interval, ns->attached_switch, ns->attached_switch,
+                                    ns->terminal_id, dst, flow.flow_id, interval, lp);
         log_terminal_generate_event(ns, m);
     }
 
@@ -2670,13 +2717,18 @@ static void handle_trace_workload_generate(terminal_state* ns, fluid_msg* m, tw_
         flow.remaining_source_mbit = 0.0;
         flow.pending_window_mbit = 0.0;
         flow.send_start_time_ns = tw_now(lp);
-        flow.current_send_rate_mbps = cached_initial_rate_mbps(ns, m->destination_terminal);
+        /* A trace flow also waits for proactive whole-path registration. */
+        flow.current_send_rate_mbps = 0.0;
         flow.rate_epoch = -1;
         flow.workload_complete = 0;
         ns->source_flows.push_back(flow);
         flow_index = ns->source_flows.size() - 1;
         m->rc_terminal_flow_appended = 1;
         ns->generated_fluid_segments++;
+
+        schedule_flow_rate_register(m->interval_id, ns->attached_switch, ns->attached_switch,
+                                    ns->terminal_id, m->destination_terminal, m->flow_id,
+                                    m->creation_interval, lp);
     } else {
         source_flow& existing = ns->source_flows[flow_index];
         if (existing.destination_terminal != m->destination_terminal) {
@@ -3120,8 +3172,10 @@ static bool port_has_buffered_flow(const switch_state* ns, int port_id,
     return false;
 }
 
-static bool rate_flow_is_active(const switch_state* ns, int port_id, const switch_rate_flow& flow) {
-    return !flow.final_segment_seen || port_has_buffered_flow(ns, port_id, flow.flow_id);
+static bool rate_flow_is_active(const switch_state* ns, int port_id,
+                                const switch_rate_flow& flow) {
+    return flow.rate_ready &&
+           (!flow.final_segment_seen || port_has_buffered_flow(ns, port_id, flow.flow_id));
 }
 
 static int active_rate_flow_count_on_port(const switch_state* ns, int port_id) {
@@ -3349,7 +3403,7 @@ static double query_statistical_phase_egress_mbit(const switch_state* ns, int po
 }
 
 static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
-                              fluid_msg* rc_msg) {
+                              int rate_ready, fluid_msg* rc_msg) {
     rc_msg->rc_rate_flow_created = 0;
     rc_msg->rc_rate_flow_appended = 0;
     rc_msg->rc_rate_flow_index = find_rate_flow_index(ns, port_id, m->flow_id);
@@ -3359,6 +3413,7 @@ static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
         rc_msg->rc_rate_flow_before = flow;
         flow.ingress_id = m->rc_ingress_id;
         flow.final_segment_seen |= m->final_segment_sent;
+        flow.rate_ready |= rate_ready;
         return;
     }
 
@@ -3369,6 +3424,7 @@ static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
     new_flow.destination_terminal = m->destination_terminal;
     new_flow.ingress_id = m->rc_ingress_id;
     new_flow.final_segment_seen = m->final_segment_sent;
+    new_flow.rate_ready = rate_ready;
     new_flow.downstream_rate_mbps = std::numeric_limits<double>::infinity();
     new_flow.downstream_rate_epoch = -1;
     new_flow.last_advertised_rate_mbps = 0.0;
@@ -3455,6 +3511,7 @@ static void handle_switch_rate_feedback(switch_state* ns, fluid_msg* m, tw_lp* l
 
     const double previous_rate_mbps = flow.downstream_rate_mbps;
     const int previous_rate_epoch = flow.downstream_rate_epoch;
+    const bool was_rate_ready = flow.rate_ready != 0;
     double updated_rate_mbps = std::max(0.0, m->rate_mbps);
     int updated_rate_epoch = m->rate_epoch;
 
@@ -3476,9 +3533,10 @@ static void handle_switch_rate_feedback(switch_state* ns, fluid_msg* m, tw_lp* l
      */
     flow.downstream_rate_mbps = updated_rate_mbps;
     flow.downstream_rate_epoch = updated_rate_epoch;
+    flow.rate_ready = 1;
     m->rc_rate_update_applied = 1;
 
-    if (rate_changed && rate_flow_is_active(ns, port_id, flow)) {
+    if ((!was_rate_ready || rate_changed) && rate_flow_is_active(ns, port_id, flow)) {
         request_switch_rate_eval(ns, m->interval_id, port_id, lp, m);
     }
 }
@@ -3676,6 +3734,56 @@ static void switch_init(switch_state* ns, tw_lp* lp) {
 }
 
 
+static void handle_flow_rate_register(switch_state* ns, fluid_msg* m,
+                                      tw_lp* lp) {
+    m->rc_rate_eval_request_created = 0;
+    m->rc_rate_flow_created = 0;
+    m->rc_rate_flow_appended = 0;
+    m->rc_rate_flow_index = -1;
+    m->rc_no_route = 0;
+    m->rc_port_id = -1;
+
+    int ingress_id = -1;
+    if (m->source_switch == ns->switch_id) {
+        ingress_id = find_ingress_link(ns, 1, m->source_terminal);
+    } else {
+        ingress_id = find_ingress_link(ns, 0, m->source_switch);
+    }
+    if (ingress_id < 0) {
+        tw_error(TW_LOC,
+                 "switch %d could not identify flow-registration ingress for "
+                 "source terminal %d switch %d",
+                 ns->switch_id, m->source_terminal, m->source_switch);
+    }
+    m->rc_ingress_id = ingress_id;
+
+    const int port_id = output_port_for_destination(ns, m->destination_terminal);
+    if (port_id < 0) {
+        m->rc_no_route = 1;
+        return;
+    }
+    m->rc_port_id = port_id;
+
+    const port_desc& port = ns->ports[port_id];
+    const int ready_here = port.is_terminal ? 1 : 0;
+    observe_rate_flow(ns, port_id, m, ready_here, m);
+
+    if (port.is_terminal) {
+        /* The destination-facing access link is the end of registration.
+         * Start the existing max-min feedback wave here so every upstream
+         * switch receives a downstream-constrained rate before activating the
+         * new flow locally. */
+        if (m->rc_rate_flow_created || ready_here) {
+            request_switch_rate_eval(ns, m->interval_id, port_id, lp, m);
+        }
+        return;
+    }
+
+    schedule_flow_rate_register(m->interval_id, port.target_index, ns->switch_id,
+                                m->source_terminal, m->destination_terminal, m->flow_id,
+                                m->creation_interval, lp);
+}
+
 static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_egress_request_created = 0;
     m->rc_rate_eval_request_created = 0;
@@ -3754,7 +3862,9 @@ static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_log_active_before_entries = 0;
     m->rc_log_active_after_entries = 0;
 
-    observe_rate_flow(ns, port_id, m, m);
+    /* Real data arrival is a fallback that makes the flow allocatable even
+     * if an older registration event was delayed or rolled back. */
+    observe_rate_flow(ns, port_id, m, 1, m);
 
     const int prior_staged_index = find_staged_index_for_msg(ns, port_id, m);
     m->rc_prev_final_segment_sent =
@@ -4107,6 +4217,9 @@ static void switch_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp) {
     (void)b;
     debug_backpressure_event("switch", ns->switch_id, m, lp);
     switch (m->event_type) {
+    case FLOW_RATE_REGISTER:
+        handle_flow_rate_register(ns, m, lp);
+        break;
     case FLUID_SEGMENT_ARRIVAL:
         handle_switch_arrival(ns, m, lp);
         break;
@@ -4129,6 +4242,42 @@ static void switch_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp) {
     default:
         tw_error(TW_LOC, "switch received unknown event type %d", m->event_type);
     }
+}
+
+static void rollback_rate_flow_observation(switch_state* ns, fluid_msg* m) {
+    if (m->rc_no_route || m->rc_port_id < 0) {
+        return;
+    }
+    const int port_id = m->rc_port_id;
+    if (port_id >= ns->num_ports) {
+        tw_error(TW_LOC, "invalid rate-flow rollback port %d on switch %d", port_id,
+                 ns->switch_id);
+    }
+
+    fixed_vector<switch_rate_flow, MAX_FLOW_ENTRIES_PER_PORT>& rate_flows =
+        ns->rate_flows[port_id];
+    if (m->rc_rate_flow_created) {
+        const int rate_idx = m->rc_rate_flow_index;
+        if (rate_idx < 0 || rate_idx >= rate_flows.size() ||
+            rate_flows[rate_idx].flow_id != m->flow_id) {
+            tw_error(TW_LOC, "invalid created rate-flow rollback on switch %d", ns->switch_id);
+        }
+        if (m->rc_rate_flow_appended) {
+            if (rate_idx != rate_flows.size() - 1) {
+                tw_error(TW_LOC, "rate-flow rollback order mismatch on switch %d", ns->switch_id);
+            }
+            rate_flows.pop_back();
+        } else {
+            rate_flows[rate_idx] = m->rc_rate_flow_before;
+        }
+    } else if (m->rc_rate_flow_index >= 0) {
+        rate_flows[m->rc_rate_flow_index] = m->rc_rate_flow_before;
+    }
+}
+
+static void rollback_flow_rate_register(switch_state* ns, fluid_msg* m) {
+    undo_requested_switch_rate_eval(ns, m);
+    rollback_rate_flow_observation(ns, m);
 }
 
 static void rollback_switch_arrival(switch_state* ns, fluid_msg* m) {
@@ -4180,24 +4329,7 @@ static void rollback_switch_arrival(switch_state* ns, fluid_msg* m) {
         staged.erase(staged.begin() + idx);
     }
 
-    fixed_vector<switch_rate_flow, MAX_FLOW_ENTRIES_PER_PORT>& rate_flows = ns->rate_flows[port_id];
-    if (m->rc_rate_flow_created) {
-        const int rate_idx = m->rc_rate_flow_index;
-        if (rate_idx < 0 || rate_idx >= rate_flows.size() ||
-            rate_flows[rate_idx].flow_id != m->flow_id) {
-            tw_error(TW_LOC, "invalid created rate-flow rollback on switch %d", ns->switch_id);
-        }
-        if (m->rc_rate_flow_appended) {
-            if (rate_idx != rate_flows.size() - 1) {
-                tw_error(TW_LOC, "rate-flow rollback order mismatch on switch %d", ns->switch_id);
-            }
-            rate_flows.pop_back();
-        } else {
-            rate_flows[rate_idx] = m->rc_rate_flow_before;
-        }
-    } else if (m->rc_rate_flow_index >= 0) {
-        rate_flows[m->rc_rate_flow_index] = m->rc_rate_flow_before;
-    }
+    rollback_rate_flow_observation(ns, m);
 }
 
 static void rollback_switch_egress(switch_state* ns, fluid_msg* m) {
@@ -4326,6 +4458,10 @@ static void switch_rev_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp
     (void)lp;
 
     switch (m->event_type) {
+    case FLOW_RATE_REGISTER:
+        rollback_flow_rate_register(ns, m);
+        break;
+
     case FLUID_SEGMENT_ARRIVAL:
         rollback_switch_arrival(ns, m);
         break;
