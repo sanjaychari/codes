@@ -1856,10 +1856,10 @@ static void schedule_terminal_send(int interval_id, tw_lp* lp) {
     tw_event_send(e);
 }
 
-static void schedule_flow_rate_register(int interval_id, int destination_switch,
-                                        int source_switch, int source_terminal,
-                                        int destination_terminal, unsigned long long flow_id,
-                                        int creation_interval, tw_lp* lp) {
+static void schedule_flow_rate_register(int interval_id, int destination_switch, int source_switch,
+                                        int source_terminal, int destination_terminal,
+                                        unsigned long long flow_id, int creation_interval,
+                                        tw_lp* lp) {
     const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
     if (interval_id < 0 || interval_id >= total_intervals) {
         return;
@@ -1869,8 +1869,7 @@ static void schedule_flow_rate_register(int interval_id, int destination_switch,
                  destination_switch);
     }
 
-    tw_event* e =
-        tw_event_new(get_switch_gid(destination_switch), backpressure_delay_ns(), lp);
+    tw_event* e = tw_event_new(get_switch_gid(destination_switch), backpressure_delay_ns(), lp);
     fluid_msg* m = (fluid_msg*)tw_event_data(e);
     memset(m, 0, sizeof(*m));
     m->event_type = FLOW_RATE_REGISTER;
@@ -3172,8 +3171,7 @@ static bool port_has_buffered_flow(const switch_state* ns, int port_id,
     return false;
 }
 
-static bool rate_flow_is_active(const switch_state* ns, int port_id,
-                                const switch_rate_flow& flow) {
+static bool rate_flow_is_active(const switch_state* ns, int port_id, const switch_rate_flow& flow) {
     return flow.rate_ready &&
            (!flow.final_segment_seen || port_has_buffered_flow(ns, port_id, flow.flow_id));
 }
@@ -3402,8 +3400,8 @@ static double query_statistical_phase_egress_mbit(const switch_state* ns, int po
 #endif
 }
 
-static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
-                              int rate_ready, fluid_msg* rc_msg) {
+static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m, int rate_ready,
+                              fluid_msg* rc_msg) {
     rc_msg->rc_rate_flow_created = 0;
     rc_msg->rc_rate_flow_appended = 0;
     rc_msg->rc_rate_flow_index = find_rate_flow_index(ns, port_id, m->flow_id);
@@ -3734,8 +3732,7 @@ static void switch_init(switch_state* ns, tw_lp* lp) {
 }
 
 
-static void handle_flow_rate_register(switch_state* ns, fluid_msg* m,
-                                      tw_lp* lp) {
+static void handle_flow_rate_register(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_rate_eval_request_created = 0;
     m->rc_rate_flow_created = 0;
     m->rc_rate_flow_appended = 0;
@@ -4250,12 +4247,10 @@ static void rollback_rate_flow_observation(switch_state* ns, fluid_msg* m) {
     }
     const int port_id = m->rc_port_id;
     if (port_id >= ns->num_ports) {
-        tw_error(TW_LOC, "invalid rate-flow rollback port %d on switch %d", port_id,
-                 ns->switch_id);
+        tw_error(TW_LOC, "invalid rate-flow rollback port %d on switch %d", port_id, ns->switch_id);
     }
 
-    fixed_vector<switch_rate_flow, MAX_FLOW_ENTRIES_PER_PORT>& rate_flows =
-        ns->rate_flows[port_id];
+    fixed_vector<switch_rate_flow, MAX_FLOW_ENTRIES_PER_PORT>& rate_flows = ns->rate_flows[port_id];
     if (m->rc_rate_flow_created) {
         const int rate_idx = m->rc_rate_flow_index;
         if (rate_idx < 0 || rate_idx >= rate_flows.size() ||
