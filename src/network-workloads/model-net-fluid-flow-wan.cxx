@@ -2658,12 +2658,12 @@ static void handle_random_workload_generate(terminal_state* ns, fluid_msg* m, tw
         flow.pending_window_mbit = 0.0;
         flow.send_start_time_ns = event_time_ns(interval, PHASE_TERMINAL_SEND);
         /*
-         * Do not transmit at the access-link rate while the path is unknown.
-         * FLOW_RATE_REGISTER establishes the flow on every switch and the
-         * existing feedback path installs the first usable rate during this
-         * same transmit window.
+         * Start the data plane immediately using the terminal's best known
+         * rate. With no cached path constraint, this is the terminal access
+         * rate. FLOW_RATE_REGISTER proceeds concurrently, and the returned
+         * downstream rate updates the flow at its exact arrival timestamp.
          */
-        flow.current_send_rate_mbps = 0.0;
+        flow.current_send_rate_mbps = cached_initial_rate_mbps(ns, dst);
         flow.rate_epoch = -1;
         flow.workload_complete = 1;
 
@@ -2716,8 +2716,12 @@ static void handle_trace_workload_generate(terminal_state* ns, fluid_msg* m, tw_
         flow.remaining_source_mbit = 0.0;
         flow.pending_window_mbit = 0.0;
         flow.send_start_time_ns = tw_now(lp);
-        /* A trace flow also waits for proactive whole-path registration. */
-        flow.current_send_rate_mbps = 0.0;
+        /*
+         * A new trace flow starts immediately while whole-path registration
+         * proceeds concurrently. The first downstream rate update accounts
+         * for transmission at this initial rate before changing the rate.
+         */
+        flow.current_send_rate_mbps = cached_initial_rate_mbps(ns, m->destination_terminal);
         flow.rate_epoch = -1;
         flow.workload_complete = 0;
         ns->source_flows.push_back(flow);
