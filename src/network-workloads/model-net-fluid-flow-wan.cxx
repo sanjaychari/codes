@@ -180,17 +180,24 @@ static void interval_flag_set(interval_flags* flags, int interval_id, bool value
     }
 }
 
+/*
+ * Canonical data-plane phase offsets for a 1-second-or-longer fluid interval.
+ * For intervals shorter than 1 second, these offsets are scaled
+ * proportionally so that the entire data-plane phase sequence remains within
+ * one fluid interval.
+ */
 static constexpr double PHASE_EARLY_SWITCH_EGRESS = 0.05;
 static constexpr double PHASE_TERMINAL_WORKLOAD_GENERATE = 0.10;
 static constexpr double PHASE_TERMINAL_SEND = 0.15;
-/*
- * Trace offers are released immediately after the interval send boundary.
- * The 1 ns separation avoids same-timestamp ordering ambiguity while making
- * the trace interval effectively identical to the configured data interval.
- */
-static constexpr double PHASE_TERMINAL_TRACE_OFFER = PHASE_TERMINAL_SEND + 1.0e-9;
 static constexpr double PHASE_FLUID_SEGMENT_ARRIVAL = 0.20;
 static constexpr double PHASE_LATE_SWITCH_EGRESS = 0.60;
+
+/*
+ * Trace offers are released immediately after the interval send boundary.
+ * Keep the tie-breaking separation at an absolute 1 ns rather than scaling
+ * it with the fluid interval.
+ */
+static constexpr double TRACE_OFFER_EPSILON_SECONDS = 1.0e-9;
 
 struct link_info {
     int dst_switch;
@@ -683,8 +690,14 @@ static double milliseconds_to_ns(double milliseconds) {
     return milliseconds * 1000.0 * 1000.0;
 }
 
+static double data_phase_seconds(double canonical_phase_seconds) {
+    const double phase_scale = std::min(cfg.interval_seconds, 1.0);
+    return canonical_phase_seconds * phase_scale;
+}
+
 static double event_time_ns(int interval_id, double phase_seconds) {
-    return seconds_to_ns(((double)interval_id * cfg.interval_seconds) + phase_seconds);
+    return seconds_to_ns(((double)interval_id * cfg.interval_seconds) +
+                         data_phase_seconds(phase_seconds));
 }
 
 static double delay_until_ns(int target_interval, double phase_seconds, tw_lp* lp) {
@@ -1817,17 +1830,25 @@ static void schedule_trace_offers(const terminal_state* ns, tw_lp* lp) {
             same_interval_ordinal = 0;
         }
 
+        const double send_phase = data_phase_seconds(PHASE_TERMINAL_SEND);
+        const double arrival_phase = data_phase_seconds(PHASE_FLUID_SEGMENT_ARRIVAL);
         const double offer_phase =
-            PHASE_TERMINAL_TRACE_OFFER + (double)same_interval_ordinal * 1.0e-9;
+            send_phase + ((double)same_interval_ordinal + 1.0) * TRACE_OFFER_EPSILON_SECONDS;
         ++same_interval_ordinal;
-        if (offer_phase >= PHASE_FLUID_SEGMENT_ARRIVAL) {
+        if (offer_phase >= arrival_phase) {
             tw_error(TW_LOC,
                      "terminal %d has too many trace flows in interval %d to assign unique "
                      "trace-offer timestamps",
                      ns->terminal_id, record.interval);
         }
 
-        tw_event* e = tw_event_new(lp->gid, delay_until_ns(record.interval, offer_phase, lp), lp);
+        const double target_seconds = (double)record.interval * cfg.interval_seconds + offer_phase;
+        double delay_ns = seconds_to_ns(target_seconds) - tw_now(lp);
+        if (delay_ns <= g_tw_lookahead) {
+            delay_ns = g_tw_lookahead + 1.0;
+        }
+
+        tw_event* e = tw_event_new(lp->gid, delay_ns, lp);
         fluid_msg* m = (fluid_msg*)tw_event_data(e);
         memset(m, 0, sizeof(*m));
         m->event_type = TERMINAL_WORKLOAD_GENERATE;
