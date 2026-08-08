@@ -484,6 +484,7 @@ enum fluid_event_type {
     FLOW_RATE_REGISTER = 11,
     TERMINAL_FLOW_COMPLETE = 12,
     FLOW_SOURCE_CLOSE = 13,
+    SWITCH_EGRESS_DRAIN = 14,
 };
 
 static const char* backpressure_event_name(int event_type) {
@@ -504,6 +505,8 @@ static const char* backpressure_event_name(int event_type) {
         return "TERMINAL_FLOW_COMPLETE";
     case FLOW_SOURCE_CLOSE:
         return "FLOW_SOURCE_CLOSE";
+    case SWITCH_EGRESS_DRAIN:
+        return "SWITCH_EGRESS_DRAIN";
     default:
         return NULL;
     }
@@ -2289,6 +2292,133 @@ static void record_pause_change(fluid_msg* m, int ingress_id, const ingress_desc
     m->rc_pause_sent_asserted[i] = sent_asserted;
 }
 
+static void schedule_pause_drain(switch_state* ns, int interval_id, tw_lp* lp) {
+    const int capacity_interval = interval_id + 1;
+    const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
+    if (capacity_interval < 0 || capacity_interval >= total_intervals) {
+        return;
+    }
+
+    const double shared_queued = queued_mbit_on_switch(ns);
+    if (shared_queued <= ns->pause_low_watermark_mbit + EPS) {
+        return;
+    }
+
+    double q[MAX_PORTS_PER_SWITCH] = {0.0};
+    double bw_mbps[MAX_PORTS_PER_SWITCH] = {0.0};
+    bool active[MAX_PORTS_PER_SWITCH] = {false};
+    int active_count = 0;
+
+    for (int p = 0; p < ns->num_ports; ++p) {
+        q[p] = queued_mbit_on_port(ns, p);
+        if (q[p] <= EPS || ns->output_link_paused[p]) {
+            continue;
+        }
+        bw_mbps[p] = ns->ports[p].capacity_mbit_per_interval / cfg.interval_seconds;
+        if (bw_mbps[p] <= EPS) {
+            continue;
+        }
+        active[p] = true;
+        ++active_count;
+    }
+    if (active_count == 0) {
+        return;
+    }
+
+    /*
+     * Solve for the physical time needed for concurrently draining outputs to
+     * reduce the shared queue to the low watermark. Ports that empty before
+     * that point are removed from the active drain-rate set.
+     */
+    double remaining_to_drain = shared_queued - ns->pause_low_watermark_mbit;
+    double elapsed_sec = 0.0;
+    bool live[MAX_PORTS_PER_SWITCH] = {false};
+    for (int p = 0; p < ns->num_ports; ++p) {
+        live[p] = active[p];
+    }
+
+    while (remaining_to_drain > EPS) {
+        double total_rate_mbps = 0.0;
+        double next_empty_sec = -1.0;
+
+        for (int p = 0; p < ns->num_ports; ++p) {
+            if (!live[p]) {
+                continue;
+            }
+            total_rate_mbps += bw_mbps[p];
+            const double already_drained = bw_mbps[p] * elapsed_sec;
+            const double remaining_q = std::max(0.0, q[p] - already_drained);
+            const double empty_at = elapsed_sec + remaining_q / bw_mbps[p];
+            if (next_empty_sec < 0.0 || empty_at < next_empty_sec) {
+                next_empty_sec = empty_at;
+            }
+        }
+
+        if (total_rate_mbps <= EPS || next_empty_sec < 0.0) {
+            return;
+        }
+
+        const double direct_finish_sec = elapsed_sec + remaining_to_drain / total_rate_mbps;
+        if (direct_finish_sec <= next_empty_sec + EPS) {
+            elapsed_sec = direct_finish_sec;
+            remaining_to_drain = 0.0;
+            break;
+        }
+
+        const double dt = std::max(0.0, next_empty_sec - elapsed_sec);
+        remaining_to_drain -= total_rate_mbps * dt;
+        elapsed_sec = next_empty_sec;
+
+        for (int p = 0; p < ns->num_ports; ++p) {
+            if (!live[p]) {
+                continue;
+            }
+            if (q[p] - bw_mbps[p] * elapsed_sec <= EPS) {
+                live[p] = false;
+            }
+        }
+    }
+
+    if (elapsed_sec <= 0.0) {
+        return;
+    }
+
+    /*
+     * This special event is only useful when the low-watermark crossing occurs
+     * before the next normal fluid egress boundary. If it would take an entire
+     * interval or longer, the ordinary next-interval egress is already the
+     * correct coarse-grained mechanism.
+     */
+    const double next_egress_time_ns = event_time_ns(capacity_interval, PHASE_EARLY_SWITCH_EGRESS);
+    const double drain_time_ns = tw_now(lp) + seconds_to_ns(elapsed_sec);
+    if (drain_time_ns + g_tw_lookahead >= next_egress_time_ns) {
+        return;
+    }
+
+    const tw_stime delay_ns =
+        std::max((tw_stime)(drain_time_ns - tw_now(lp)), g_tw_lookahead + 1.0);
+
+    for (int p = 0; p < ns->num_ports; ++p) {
+        if (!active[p]) {
+            continue;
+        }
+        const double quota_mbit = std::min(q[p], bw_mbps[p] * elapsed_sec);
+        if (quota_mbit <= EPS) {
+            continue;
+        }
+
+        tw_event* e = tw_event_new(lp->gid, delay_ns, lp);
+        fluid_msg* dm = (fluid_msg*)tw_event_data(e);
+        memset(dm, 0, sizeof(*dm));
+        dm->event_type = SWITCH_EGRESS_DRAIN;
+        dm->interval_id = interval_id;
+        dm->port_id = p;
+        dm->mbit = quota_mbit;
+        dm->rate_epoch = capacity_interval;
+        tw_event_send(e);
+    }
+}
+
 static void handle_ethernet_pause_eval(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_pause_eval_event_active = 0;
     m->rc_pause_change_count = 0;
@@ -2363,6 +2493,10 @@ static void handle_ethernet_pause_eval(switch_state* ns, fluid_msg* m, tw_lp* lp
             has_paused_ingress = true;
             covered_mbit += ingress.queued_mbit;
             send_pause_update_for_ingress(ns, ingress_id, m->interval_id, 1, lp);
+        }
+
+        if (m->rc_pause_change_count > 0) {
+            schedule_pause_drain(ns, m->interval_id, lp);
         }
     }
 }
@@ -2708,15 +2842,17 @@ static void log_switch_egress_event(const switch_state* ns, const fluid_msg* m) 
         }
 
         if (rc->send_mbit > EPS) {
-            append_fluid_segment_log(m->interval_id,
-                                     rc->source_is_staged ? "allocate_send_arrival"
-                                                          : "allocate_send_buffered",
-                                     ns->switch_id, m->port_id, m->rc_log_target_is_terminal,
-                                     m->rc_log_target_index, rc->before.flow_id,
-                                     rc->before.source_terminal, rc->before.destination_terminal,
-                                     rc->before.creation_interval, m->rc_log_capacity_mbit,
-                                     m->rc_log_port_queued_before_mbit, rc->send_mbit,
-                                     remaining_after, 0.0);
+            const char* allocation_event =
+                rc->source_is_staged
+                    ? "allocate_send_arrival"
+                    : (m->event_type == SWITCH_EGRESS_DRAIN ? "allocate_send_pause_drain"
+                                                            : "allocate_send_buffered");
+            append_fluid_segment_log(m->interval_id, allocation_event, ns->switch_id, m->port_id,
+                                     m->rc_log_target_is_terminal, m->rc_log_target_index,
+                                     rc->before.flow_id, rc->before.source_terminal,
+                                     rc->before.destination_terminal, rc->before.creation_interval,
+                                     m->rc_log_capacity_mbit, m->rc_log_port_queued_before_mbit,
+                                     rc->send_mbit, remaining_after, 0.0);
         }
         if (rc->buffered_mbit > EPS) {
             append_fluid_segment_log(m->interval_id, "enqueue_residual", ns->switch_id, m->port_id,
@@ -4219,6 +4355,159 @@ static void send_fluid_segment_fragment(switch_state* ns, int port_id,
     ns->sent_fragments++;
 }
 
+static void handle_switch_egress_drain(switch_state* ns, fluid_msg* m, tw_lp* lp) {
+    m->rc_egress_event_active = 1;
+    m->rc_egress_request_created = 0;
+    m->rc_rate_eval_request_created = 0;
+    m->rc_pause_eval_request_created = 0;
+    m->rc_accepted_mbit = 0.0;
+    m->rc_dropped_mbit = 0.0;
+
+    const int port_id = m->port_id;
+    if (port_id < 0 || port_id >= ns->num_ports) {
+        tw_error(TW_LOC, "invalid switch drain port %d", port_id);
+    }
+
+    const int capacity_interval = m->rate_epoch;
+    if (capacity_interval != m->interval_id + 1) {
+        tw_error(TW_LOC, "invalid switch drain capacity interval %d for interval %d",
+                 capacity_interval, m->interval_id);
+    }
+
+    port_desc* p = &ns->ports[port_id];
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& qv = ns->queues[port_id];
+
+    m->rc_prev_capacity_accounting_interval = ns->capacity_accounting_interval[port_id];
+    m->rc_prev_capacity_used_mbit = ns->capacity_used_mbit[port_id];
+
+    if (ns->capacity_accounting_interval[port_id] != capacity_interval) {
+        ns->capacity_accounting_interval[port_id] = capacity_interval;
+        ns->capacity_used_mbit[port_id] = 0.0;
+    }
+
+    const double capacity = p->capacity_mbit_per_interval;
+    const double remaining_physical_capacity =
+        std::max(0.0, capacity - ns->capacity_used_mbit[port_id]);
+    const double queued_before = queued_mbit_on_port(ns, port_id);
+    const double shared_queued_before = queued_mbit_on_switch(ns);
+    const double drain_budget =
+        ns->output_link_paused[port_id]
+            ? 0.0
+            : std::min(std::min(m->mbit, remaining_physical_capacity), queued_before);
+
+    int active_before = 0;
+    for (const queued_fluid_segment& q : qv) {
+        if (q.valid && q.remaining_mbit > EPS) {
+            ++active_before;
+        }
+    }
+    if (active_before > MAX_RC_ALLOCATIONS) {
+        tw_error(TW_LOC,
+                 "switch %d port %d drain has %d active fluid segments, exceeding "
+                 "MAX_RC_ALLOCATIONS=%d",
+                 ns->switch_id, port_id, active_before, MAX_RC_ALLOCATIONS);
+    }
+
+    m->rc_alloc_count = 0;
+    m->rc_log_target_is_terminal = p->is_terminal;
+    m->rc_log_target_index = p->target_index;
+    m->rc_log_capacity_mbit = capacity;
+    m->rc_log_port_queued_before_mbit = queued_before;
+    m->rc_log_port_queued_after_mbit = queued_before;
+    m->rc_log_shared_queued_before_mbit = shared_queued_before;
+    m->rc_log_shared_queued_after_mbit = shared_queued_before;
+    m->rc_log_fluid_segment_remaining_after_mbit = 0.0;
+    m->rc_log_sent_total_mbit = 0.0;
+    m->rc_log_active_before_entries = active_before;
+    m->rc_log_active_after_entries = active_before;
+    m->rc_pause_target_port = -1;
+
+    double remaining_capacity = drain_budget;
+    double send_plan[MAX_FLOW_ENTRIES_PER_PORT] = {0.0};
+    while (remaining_capacity > EPS) {
+        int unsatisfied_count = 0;
+        for (int i = 0; i < (int)qv.size(); ++i) {
+            if (qv[i].valid && qv[i].remaining_mbit - send_plan[i] > EPS) {
+                ++unsatisfied_count;
+            }
+        }
+        if (unsatisfied_count == 0) {
+            break;
+        }
+
+        const double equal_share = remaining_capacity / unsatisfied_count;
+        double allocated_this_round = 0.0;
+        for (int i = 0; i < (int)qv.size(); ++i) {
+            if (!qv[i].valid || qv[i].remaining_mbit - send_plan[i] <= EPS) {
+                continue;
+            }
+            const double available = qv[i].remaining_mbit - send_plan[i];
+            const double send = std::min(equal_share, available);
+            send_plan[i] += send;
+            allocated_this_round += send;
+        }
+        if (allocated_this_round <= EPS) {
+            break;
+        }
+        remaining_capacity -= allocated_this_round;
+        if (remaining_capacity < 0.0 && remaining_capacity > -EPS) {
+            remaining_capacity = 0.0;
+        }
+    }
+
+    const int rate_active_before = active_rate_flow_count_on_port(ns, port_id);
+    double sent_total = 0.0;
+    for (int i = 0; i < (int)qv.size(); ++i) {
+        if (!qv[i].valid || send_plan[i] <= EPS) {
+            continue;
+        }
+
+        const queued_fluid_segment before = qv[i];
+        const double send = std::min(send_plan[i], before.remaining_mbit);
+        rc_alloc_record* rc = &m->rc_allocs[m->rc_alloc_count++];
+        memset(rc, 0, sizeof(*rc));
+        rc->valid = 1;
+        rc->source_is_staged = 0;
+        rc->queue_index = i;
+        rc->before = before;
+        rc->send_mbit = send;
+
+        send_fluid_segment_fragment(ns, port_id, &before, send, m->interval_id, lp);
+        qv[i].remaining_mbit -= send;
+        ns->ingress_links[before.ingress_id].queued_mbit -= send;
+        if (ns->ingress_links[before.ingress_id].queued_mbit < 0.0 &&
+            ns->ingress_links[before.ingress_id].queued_mbit > -EPS) {
+            ns->ingress_links[before.ingress_id].queued_mbit = 0.0;
+        }
+        sent_total += send;
+    }
+    compact_port_queue(ns, port_id);
+
+    ns->capacity_used_mbit[port_id] += sent_total;
+    if (ns->capacity_used_mbit[port_id] > capacity + EPS) {
+        tw_error(TW_LOC,
+                 "switch %d port %d exceeded reserved interval capacity during PAUSE drain: "
+                 "used %.12f capacity %.12f",
+                 ns->switch_id, port_id, ns->capacity_used_mbit[port_id], capacity);
+    }
+
+    const double queued_after = queued_mbit_on_port(ns, port_id);
+    const double shared_queued_after = queued_mbit_on_switch(ns);
+    m->rc_log_port_queued_after_mbit = queued_after;
+    m->rc_log_shared_queued_after_mbit = shared_queued_after;
+    m->rc_log_sent_total_mbit = sent_total;
+    m->rc_log_active_after_entries = active_fluid_segment_count_on_port(ns, port_id);
+
+    log_switch_egress_event(ns, m);
+
+    const int rate_active_after = active_rate_flow_count_on_port(ns, port_id);
+    request_rate_eval_if_active_set_changed(ns, port_id, rate_active_before, rate_active_after,
+                                            m->interval_id, lp, m);
+    if (std::fabs(shared_queued_after - shared_queued_before) > EPS) {
+        request_ethernet_pause_eval(ns, m->interval_id, lp, m);
+    }
+}
+
 static void handle_switch_egress(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_egress_request_created = 0;
     m->rc_rate_eval_request_created = 0;
@@ -4519,6 +4808,9 @@ static void switch_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp) {
     case SWITCH_EGRESS_LATE:
         handle_switch_egress(ns, m, lp);
         break;
+    case SWITCH_EGRESS_DRAIN:
+        handle_switch_egress_drain(ns, m, lp);
+        break;
     case ETHERNET_PAUSE_FRAME_UPDATE:
         handle_switch_pause_update(ns, m, lp);
         break;
@@ -4743,6 +5035,51 @@ static void rollback_switch_egress(switch_state* ns, fluid_msg* m) {
     }
 }
 
+static void rollback_switch_egress_drain(switch_state* ns, fluid_msg* m) {
+    if (!m->rc_egress_event_active) {
+        return;
+    }
+
+    const int port_id = m->port_id;
+    if (port_id < 0 || port_id >= ns->num_ports) {
+        tw_error(TW_LOC, "invalid rollback drain port %d on switch %d", port_id, ns->switch_id);
+    }
+
+    undo_requested_ethernet_pause_eval(ns, m);
+    undo_requested_switch_rate_eval(ns, m);
+
+    ns->capacity_accounting_interval[port_id] = m->rc_prev_capacity_accounting_interval;
+    ns->capacity_used_mbit[port_id] = m->rc_prev_capacity_used_mbit;
+
+    fixed_vector<queued_fluid_segment, MAX_FLOW_ENTRIES_PER_PORT>& qv = ns->queues[port_id];
+    const port_desc* p = &ns->ports[port_id];
+
+    for (int r = 0; r < m->rc_alloc_count; ++r) {
+        rc_alloc_record* rc = &m->rc_allocs[r];
+        if (!rc->valid || rc->send_mbit <= EPS) {
+            continue;
+        }
+
+        int idx = rc->queue_index;
+        if (idx < 0 || idx >= (int)qv.size() || qv[idx].flow_id != rc->before.flow_id) {
+            idx = find_queue_index_for_fluid_segment(ns, port_id, rc->before);
+        }
+        if (idx >= 0) {
+            qv[idx] = rc->before;
+        } else {
+            const int insert_idx = std::max(0, std::min(rc->queue_index, (int)qv.size()));
+            qv.insert(qv.begin() + insert_idx, rc->before);
+        }
+
+        ns->ingress_links[rc->before.ingress_id].queued_mbit += rc->send_mbit;
+        ns->sent_mbit -= rc->send_mbit;
+        ns->sent_fragments--;
+        if (p->is_terminal) {
+            ns->delivered_local_mbit -= rc->send_mbit;
+        }
+    }
+}
+
 static void switch_rev_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp) {
     (void)b;
     (void)lp;
@@ -4764,6 +5101,10 @@ static void switch_rev_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp
     case SWITCH_EGRESS_EARLY:
     case SWITCH_EGRESS_LATE:
         rollback_switch_egress(ns, m);
+        break;
+
+    case SWITCH_EGRESS_DRAIN:
+        rollback_switch_egress_drain(ns, m);
         break;
 
     case ETHERNET_PAUSE_EVAL:
@@ -4852,6 +5193,7 @@ static void switch_commit_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp*
 
     case SWITCH_EGRESS_EARLY:
     case SWITCH_EGRESS_LATE:
+    case SWITCH_EGRESS_DRAIN:
         log_switch_egress_event(ns, m);
         break;
 
