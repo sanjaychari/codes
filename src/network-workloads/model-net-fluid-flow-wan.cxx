@@ -5430,7 +5430,20 @@ int main(int argc, char** argv) {
     validate_ross_message_size_or_abort(rank);
 
     add_lp_types();
-    codes_mapping_setup();
+    /*
+     * rng_seed is a workload-level reproducibility knob. The random-traffic
+     * workload draws destinations and sizes from each terminal LP's ROSS RNG,
+     * so reading rng_seed into cfg is not enough: select a distinct ROSS RNG
+     * stream family before the LPs begin drawing.
+     */
+    if (configured_workload_mode == FLUID_WORKLOAD_RANDOM_TRAFFIC) {
+        if (cfg.rng_seed <= 0) {
+            tw_error(TW_LOC, "rng_seed must be positive for random traffic, got %d", cfg.rng_seed);
+        }
+        codes_mapping_setup_with_seed_offset(cfg.rng_seed);
+    } else {
+        codes_mapping_setup();
+    }
 
     total_switch_lps = codes_mapping_get_lp_count(GROUP_NAME, 0, SWITCH_LP_NAME, NULL, 1);
     total_terminal_lps = codes_mapping_get_lp_count(GROUP_NAME, 0, TERMINAL_LP_NAME, NULL, 1);
@@ -5455,9 +5468,9 @@ int main(int argc, char** argv) {
                cfg.pause_enabled);
 
         if (configured_workload_mode == FLUID_WORKLOAD_RANDOM_TRAFFIC) {
-            printf("flow_generation_every_n_intervals=%d random_flow_min_%s=%.6f "
-                   "random_flow_max_%s=%.6f ",
-                   cfg.flow_generation_every_n_intervals, output_data_field_suffix(),
+            printf("rng_seed=%d flow_generation_every_n_intervals=%d "
+                   "random_flow_min_%s=%.6f random_flow_max_%s=%.6f ",
+                   cfg.rng_seed, cfg.flow_generation_every_n_intervals, output_data_field_suffix(),
                    to_output_data_unit(cfg.random_flow_min_mbit), output_data_field_suffix(),
                    to_output_data_unit(cfg.random_flow_max_mbit));
         } else {
