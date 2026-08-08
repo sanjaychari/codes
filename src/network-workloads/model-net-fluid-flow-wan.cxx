@@ -181,16 +181,28 @@ static void interval_flag_set(interval_flags* flags, int interval_id, bool value
 }
 
 /*
- * Canonical data-plane phase offsets for a 1-second-or-longer fluid interval.
- * For intervals shorter than 1 second, these offsets are scaled
- * proportionally so that the entire data-plane phase sequence remains within
- * one fluid interval.
+ * Data-plane phases are ordering epsilons, not physical durations.
+ *
+ * These timestamps exist only to give ROSS a deterministic causal order for
+ * events that conceptually belong to the same fluid interval:
+ *
+ *   early egress
+ *     < workload generation
+ *     < terminal send
+ *     < fluid-segment arrival
+ *     < late egress
+ *
+ * Keep the offsets tiny and absolute so changing the fluid interval does not
+ * turn an ordering convention into tens or hundreds of milliseconds of
+ * artificial transmission/control time.  For extremely small intervals,
+ * data_phase_seconds() scales the sequence down so it still fits safely
+ * inside the interval.
  */
-static constexpr double PHASE_EARLY_SWITCH_EGRESS = 0.05;
-static constexpr double PHASE_TERMINAL_WORKLOAD_GENERATE = 0.10;
-static constexpr double PHASE_TERMINAL_SEND = 0.15;
-static constexpr double PHASE_FLUID_SEGMENT_ARRIVAL = 0.20;
-static constexpr double PHASE_LATE_SWITCH_EGRESS = 0.60;
+static constexpr double PHASE_EARLY_SWITCH_EGRESS = 1.0e-6;
+static constexpr double PHASE_TERMINAL_WORKLOAD_GENERATE = 2.0e-6;
+static constexpr double PHASE_TERMINAL_SEND = 3.0e-6;
+static constexpr double PHASE_FLUID_SEGMENT_ARRIVAL = 4.0e-6;
+static constexpr double PHASE_LATE_SWITCH_EGRESS = 5.0e-6;
 
 /*
  * Trace offers are released immediately after the interval send boundary.
@@ -239,6 +251,7 @@ struct sim_config {
     double random_flow_min_mbit = 10000.0;
     double random_flow_max_mbit = 50000.0;
     int debug_prints = 0;
+    int pause_enabled = 1;
     char egress_model[32] = "pdes";
     char topology_yaml_file[1024] = "";
     char traffic_trace_file[1024] = "";
@@ -328,6 +341,7 @@ struct source_flow {
     double current_send_rate_mbps;
     int rate_epoch;
     int workload_complete;
+    int source_close_sent;
 };
 
 enum rate_cache_key_type {
@@ -350,7 +364,14 @@ struct switch_rate_flow {
     int source_terminal;
     int destination_terminal;
     int ingress_id;
-    int final_segment_seen;
+    /*
+     * source_closed means that the terminal will inject no future data for
+     * this flow.  It removes the flow from future source-rate allocation, but
+     * does not discard any staged/buffered data already present on this port.
+     * The normal switch egress path continues to service that tail subject to
+     * the physical per-interval link-capacity budget.
+     */
+    int source_closed;
     /*
      * A proactive FLOW_RATE_REGISTER creates this entry before data arrives.
      * Non-destination switches keep the flow inactive until feedback from the
@@ -386,6 +407,7 @@ struct terminal_state {
     int tx_window_active;
     int tx_window_interval;
     tw_stime tx_last_update_time_ns;
+    int completion_generation;
     int link_paused;
     tw_stime pause_started_at_ns;
     double total_pause_time_ns;
@@ -460,6 +482,8 @@ enum fluid_event_type {
     SWITCH_RATE_FEEDBACK = 9,
     TERMINAL_RATE_UPDATE = 10,
     FLOW_RATE_REGISTER = 11,
+    TERMINAL_FLOW_COMPLETE = 12,
+    FLOW_SOURCE_CLOSE = 13,
 };
 
 static const char* backpressure_event_name(int event_type) {
@@ -476,6 +500,10 @@ static const char* backpressure_event_name(int event_type) {
         return "TERMINAL_RATE_UPDATE";
     case FLOW_RATE_REGISTER:
         return "FLOW_RATE_REGISTER";
+    case TERMINAL_FLOW_COMPLETE:
+        return "TERMINAL_FLOW_COMPLETE";
+    case FLOW_SOURCE_CLOSE:
+        return "FLOW_SOURCE_CLOSE";
     default:
         return NULL;
     }
@@ -510,6 +538,7 @@ struct fluid_msg {
     int rate_epoch;
     int rate_scope_key_type;
     int rate_scope_key_index;
+    int completion_generation;
     int pause_asserted;
     int pause_source_switch;
 
@@ -550,6 +579,7 @@ struct fluid_msg {
     int rc_prev_tx_window_active;
     int rc_prev_tx_window_interval;
     tw_stime rc_prev_tx_last_update_time_ns;
+    int rc_prev_completion_generation;
     int rc_prev_pause_asserted;
     tw_stime rc_prev_pause_started_at_ns;
     double rc_prev_total_pause_time_ns;
@@ -690,9 +720,26 @@ static double milliseconds_to_ns(double milliseconds) {
     return milliseconds * 1000.0 * 1000.0;
 }
 
-static double data_phase_seconds(double canonical_phase_seconds) {
-    const double phase_scale = std::min(cfg.interval_seconds, 1.0);
-    return canonical_phase_seconds * phase_scale;
+static double data_phase_seconds(double ordering_phase_seconds) {
+    /*
+     * For normal fluid intervals the phase is an absolute microsecond-scale
+     * ordering epsilon.  It must not scale with interval_seconds: doing so
+     * makes tw_now() differences between data-plane phases look like physical
+     * elapsed time to fine-grained control logic such as
+     * advance_terminal_transmission().
+     *
+     * If somebody configures an interval so small that the 5-us ordering
+     * sequence would no longer fit comfortably, compress the entire sequence
+     * proportionally into the first half of that interval while preserving
+     * exactly the same ordering.
+     */
+    const double latest_ordering_phase_seconds = PHASE_LATE_SWITCH_EGRESS;
+    if (cfg.interval_seconds > 2.0 * latest_ordering_phase_seconds) {
+        return ordering_phase_seconds;
+    }
+
+    const double scale = (0.5 * cfg.interval_seconds) / latest_ordering_phase_seconds;
+    return ordering_phase_seconds * scale;
 }
 
 static double event_time_ns(int interval_id, double phase_seconds) {
@@ -1250,6 +1297,7 @@ static void load_config(void) {
     read_double_param("FLUID_FLOW_WAN", "pause_low_watermark_fraction",
                       &cfg.pause_low_watermark_fraction);
     read_double_param("FLUID_FLOW_WAN", "backpressure_delay_ms", &cfg.backpressure_delay_ms);
+    read_int_param("FLUID_FLOW_WAN", "pause_enabled", &cfg.pause_enabled);
     read_double_param("FLUID_FLOW_WAN", "interval_seconds", &cfg.interval_seconds);
     read_int_param("FLUID_FLOW_WAN", "num_send_intervals", &cfg.num_send_intervals);
     read_int_param("FLUID_FLOW_WAN", "num_drain_intervals", &cfg.num_drain_intervals);
@@ -1287,6 +1335,9 @@ static void load_config(void) {
     if (cfg.backpressure_delay_ms <= 0.0) {
         tw_error(TW_LOC, "backpressure_delay_ms must be positive, got %.6f",
                  cfg.backpressure_delay_ms);
+    }
+    if (cfg.pause_enabled != 0 && cfg.pause_enabled != 1) {
+        tw_error(TW_LOC, "pause_enabled must be 0 or 1, got %d", cfg.pause_enabled);
     }
     if (!(cfg.pause_low_watermark_fraction >= 0.0 &&
           cfg.pause_low_watermark_fraction < cfg.pause_high_watermark_fraction &&
@@ -1877,6 +1928,46 @@ static void schedule_terminal_send(int interval_id, tw_lp* lp) {
     tw_event_send(e);
 }
 
+static void schedule_terminal_flow_complete(int interval_id, unsigned long long flow_id,
+                                            int completion_generation, double delay_ns, tw_lp* lp) {
+    if (delay_ns <= g_tw_lookahead) {
+        delay_ns = g_tw_lookahead + 1.0;
+    }
+    tw_event* e = tw_event_new(lp->gid, delay_ns, lp);
+    fluid_msg* m = (fluid_msg*)tw_event_data(e);
+    memset(m, 0, sizeof(*m));
+    m->event_type = TERMINAL_FLOW_COMPLETE;
+    m->interval_id = interval_id;
+    m->flow_id = flow_id;
+    m->completion_generation = completion_generation;
+    tw_event_send(e);
+}
+
+static void schedule_flow_source_close(int interval_id, int destination_switch, int source_switch,
+                                       int source_terminal, int destination_terminal,
+                                       unsigned long long flow_id, int creation_interval,
+                                       tw_lp* lp) {
+    const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
+    if (interval_id < 0 || interval_id >= total_intervals) {
+        return;
+    }
+    if (destination_switch < 0 || destination_switch >= total_switch_lps) {
+        tw_error(TW_LOC, "invalid source-close destination switch %d", destination_switch);
+    }
+
+    tw_event* e = tw_event_new(get_switch_gid(destination_switch), backpressure_delay_ns(), lp);
+    fluid_msg* m = (fluid_msg*)tw_event_data(e);
+    memset(m, 0, sizeof(*m));
+    m->event_type = FLOW_SOURCE_CLOSE;
+    m->interval_id = interval_id;
+    m->source_switch = source_switch;
+    m->source_terminal = source_terminal;
+    m->destination_terminal = destination_terminal;
+    m->flow_id = flow_id;
+    m->creation_interval = creation_interval;
+    tw_event_send(e);
+}
+
 static void schedule_flow_rate_register(int interval_id, int destination_switch, int source_switch,
                                         int source_terminal, int destination_terminal,
                                         unsigned long long flow_id, int creation_interval,
@@ -2151,6 +2242,9 @@ static void send_pause_update_for_ingress(switch_state* ns, int ingress_id, int 
 
 static void request_ethernet_pause_eval(switch_state* ns, int interval_id, tw_lp* lp,
                                         fluid_msg* cause_msg) {
+    if (!cfg.pause_enabled) {
+        return;
+    }
     if (ns->pause_eval_pending) {
         return;
     }
@@ -2488,6 +2582,7 @@ static void terminal_init(terminal_state* ns, tw_lp* lp) {
     ns->tx_window_active = 0;
     ns->tx_window_interval = -1;
     ns->tx_last_update_time_ns = 0.0;
+    ns->completion_generation = 0;
     ns->link_paused = 0;
     ns->pause_started_at_ns = 0.0;
     ns->total_pause_time_ns = 0.0;
@@ -2794,6 +2889,7 @@ static void prepare_terminal_tx_rc(terminal_state* ns, fluid_msg* m) {
     m->rc_prev_tx_window_active = ns->tx_window_active;
     m->rc_prev_tx_window_interval = ns->tx_window_interval;
     m->rc_prev_tx_last_update_time_ns = ns->tx_last_update_time_ns;
+    m->rc_prev_completion_generation = ns->completion_generation;
 }
 
 static rc_alloc_record* record_terminal_flow_before(terminal_state* ns, fluid_msg* m,
@@ -2818,6 +2914,12 @@ static rc_alloc_record* record_terminal_flow_before(terminal_state* ns, fluid_ms
     rc->before.remaining_mbit = flow.remaining_source_mbit;
     /* Terminal events reuse buffered_mbit as the pre-event pending-window value. */
     rc->buffered_mbit = flow.pending_window_mbit;
+    /*
+     * Terminal events reuse residual_prev_final_segment_sent to snapshot
+     * source_close_sent. Switch-egress events use this field for its original
+     * purpose, so this adds no per-message rollback storage.
+     */
+    rc->residual_prev_final_segment_sent = flow.source_close_sent;
     return rc;
 }
 
@@ -2872,6 +2974,82 @@ static void advance_terminal_transmission(terminal_state* ns, tw_stime now_ns, f
     ns->tx_last_update_time_ns = now_ns;
 }
 
+static void notify_completed_source_flows(terminal_state* ns, fluid_msg* m, tw_lp* lp) {
+    for (int i = 0; i < ns->source_flows.size(); ++i) {
+        source_flow& flow = ns->source_flows[i];
+        if (!flow.workload_complete || flow.source_close_sent || flow.remaining_source_mbit > EPS) {
+            continue;
+        }
+
+        record_terminal_flow_before(ns, m, i);
+        flow.remaining_source_mbit = 0.0;
+        flow.source_close_sent = 1;
+        schedule_flow_source_close(ns->tx_window_interval, ns->attached_switch, -1, ns->terminal_id,
+                                   flow.destination_terminal, flow.flow_id, flow.creation_interval,
+                                   lp);
+    }
+}
+
+static void refresh_terminal_completion_prediction(terminal_state* ns, tw_lp* lp) {
+    ++ns->completion_generation;
+
+    if (!ns->tx_window_active || ns->link_paused || ns->source_flows.size() == 0) {
+        return;
+    }
+
+    const int next_send_interval = ns->tx_window_interval + 1;
+    const int total_intervals = cfg.num_send_intervals + cfg.num_drain_intervals;
+    if (next_send_interval < 0 || next_send_interval > total_intervals) {
+        return;
+    }
+
+    const tw_stime window_end_ns = event_time_ns(next_send_interval, PHASE_TERMINAL_SEND);
+    if (window_end_ns <= tw_now(lp) + g_tw_lookahead) {
+        return;
+    }
+
+    double requested_mbps[MAX_SOURCE_FLOWS_PER_TERMINAL] = {0.0};
+    for (int i = 0; i < ns->source_flows.size(); ++i) {
+        const source_flow& flow = ns->source_flows[i];
+        if (flow.remaining_source_mbit > EPS && flow.send_start_time_ns <= tw_now(lp) + EPS) {
+            requested_mbps[i] = std::max(0.0, flow.current_send_rate_mbps);
+        }
+    }
+
+    double allocated_mbps[MAX_SOURCE_FLOWS_PER_TERMINAL] = {0.0};
+    const double access_rate_mbps = switches[ns->attached_switch].terminal_bandwidth_mbps;
+    compute_max_min_allocations(requested_mbps, ns->source_flows.size(), access_rate_mbps,
+                                allocated_mbps);
+
+    int earliest_index = -1;
+    double earliest_seconds = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < ns->source_flows.size(); ++i) {
+        const source_flow& flow = ns->source_flows[i];
+        if (!flow.workload_complete || flow.source_close_sent ||
+            flow.remaining_source_mbit <= EPS || allocated_mbps[i] <= EPS) {
+            continue;
+        }
+        const double seconds = flow.remaining_source_mbit / allocated_mbps[i];
+        if (seconds < earliest_seconds) {
+            earliest_seconds = seconds;
+            earliest_index = i;
+        }
+    }
+
+    if (earliest_index < 0 || !std::isfinite(earliest_seconds)) {
+        return;
+    }
+
+    const tw_stime completion_ns = tw_now(lp) + seconds_to_ns(earliest_seconds);
+    if (completion_ns + g_tw_lookahead >= window_end_ns) {
+        return;
+    }
+
+    schedule_terminal_flow_complete(ns->tx_window_interval,
+                                    ns->source_flows[earliest_index].flow_id,
+                                    ns->completion_generation, seconds_to_ns(earliest_seconds), lp);
+}
+
 static void rollback_terminal_transmission(terminal_state* ns, fluid_msg* m) {
     if (!m->rc_terminal_tx_active) {
         return;
@@ -2884,11 +3062,13 @@ static void rollback_terminal_transmission(terminal_state* ns, fluid_msg* m) {
         source_flow& flow = ns->source_flows[rc.queue_index];
         flow.remaining_source_mbit = rc.before.remaining_mbit;
         flow.pending_window_mbit = rc.buffered_mbit;
+        flow.source_close_sent = rc.residual_prev_final_segment_sent;
         ns->sent_to_switch_mbit -= rc.dropped_mbit;
     }
     ns->tx_window_active = m->rc_prev_tx_window_active;
     ns->tx_window_interval = m->rc_prev_tx_window_interval;
     ns->tx_last_update_time_ns = m->rc_prev_tx_last_update_time_ns;
+    ns->completion_generation = m->rc_prev_completion_generation;
 
     /*
      * A Time Warp event may execute, roll back, and execute again. Clear the
@@ -2903,14 +3083,11 @@ static void handle_terminal_send(terminal_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_pause_target_port = -1;
     prepare_terminal_tx_rc(ns, m);
     advance_terminal_transmission(ns, tw_now(lp), m);
+    notify_completed_source_flows(ns, m, lp);
 
     if (ns->tx_window_active) {
-        int active_count = 0;
         for (int i = 0; i < ns->source_flows.size(); ++i) {
             source_flow& flow = ns->source_flows[i];
-            if (flow.remaining_source_mbit > EPS || flow.pending_window_mbit > EPS) {
-                ++active_count;
-            }
             if (flow.pending_window_mbit <= EPS) {
                 continue;
             }
@@ -2945,6 +3122,7 @@ static void handle_terminal_send(terminal_state* ns, fluid_msg* m, tw_lp* lp) {
         ns->tx_window_interval = m->interval_id;
         ns->tx_last_update_time_ns = tw_now(lp);
         schedule_terminal_send(m->interval_id + 1, lp);
+        refresh_terminal_completion_prediction(ns, lp);
     } else {
         ns->tx_window_active = 0;
         ns->tx_window_interval = -1;
@@ -2982,6 +3160,31 @@ static void handle_terminal_rate_update(terminal_state* ns, fluid_msg* m, tw_lp*
     if (cache_changed || m->rc_rate_update_applied) {
         ns->rate_updates_received++;
     }
+    if (m->rc_rate_update_applied) {
+        refresh_terminal_completion_prediction(ns, lp);
+    }
+}
+
+static void handle_terminal_flow_complete(terminal_state* ns, fluid_msg* m, tw_lp* lp) {
+    if (m->completion_generation != ns->completion_generation) {
+        return;
+    }
+
+    /*
+     * Account source transmission exactly to the predicted completion time and
+     * send the fine-grained source-close control notification immediately.
+     *
+     * Do NOT emit pending_window_mbit here.  The data plane remains
+     * interval-fluid: bytes accumulated during this transmit window are
+     * emitted together by the next normal TERMINAL_SEND.  Sending a second
+     * FLUID_SEGMENT_ARRIVAL after the interval's late-egress phase incorrectly
+     * consumes the same interval capacity twice and can turn an otherwise
+     * harmless completion tail into shared-buffer overflow.
+     */
+    prepare_terminal_tx_rc(ns, m);
+    advance_terminal_transmission(ns, tw_now(lp), m);
+    notify_completed_source_flows(ns, m, lp);
+    refresh_terminal_completion_prediction(ns, lp);
 }
 
 static void handle_terminal_arrival(terminal_state* ns, fluid_msg* m) {
@@ -3003,6 +3206,9 @@ static void terminal_event(terminal_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp
     case TERMINAL_RATE_UPDATE:
         handle_terminal_rate_update(ns, m, lp);
         break;
+    case TERMINAL_FLOW_COMPLETE:
+        handle_terminal_flow_complete(ns, m, lp);
+        break;
     case FLUID_SEGMENT_ARRIVAL:
         handle_terminal_arrival(ns, m);
         break;
@@ -3022,6 +3228,8 @@ static void terminal_event(terminal_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp
             ns->pause_started_at_ns = 0.0;
         }
         ns->link_paused = new_paused;
+        notify_completed_source_flows(ns, m, lp);
+        refresh_terminal_completion_prediction(ns, lp);
         ns->pause_updates_received++;
         if (m->pause_asserted) {
             ns->pause_frames_received++;
@@ -3067,6 +3275,9 @@ static void terminal_rev_event(terminal_state* ns, tw_bf* b, fluid_msg* m, tw_lp
         }
         break;
     case TERMINAL_SEND:
+        rollback_terminal_transmission(ns, m);
+        break;
+    case TERMINAL_FLOW_COMPLETE:
         rollback_terminal_transmission(ns, m);
         break;
     case TERMINAL_RATE_UPDATE:
@@ -3178,27 +3389,17 @@ static int find_rate_flow_index(const switch_state* ns, int port_id, unsigned lo
     return -1;
 }
 
-static bool port_has_buffered_flow(const switch_state* ns, int port_id,
-                                   unsigned long long flow_id) {
-    if (port_id < 0 || port_id >= ns->num_ports) {
-        return false;
-    }
-    for (const queued_fluid_segment& q : ns->queues[port_id]) {
-        if (q.valid && q.flow_id == flow_id && q.remaining_mbit > EPS) {
-            return true;
-        }
-    }
-    for (const queued_fluid_segment& q : ns->staged_arrivals[port_id]) {
-        if (q.valid && q.flow_id == flow_id && q.remaining_mbit > EPS) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool rate_flow_is_active(const switch_state* ns, int port_id, const switch_rate_flow& flow) {
-    return flow.rate_ready &&
-           (!flow.final_segment_seen || port_has_buffered_flow(ns, port_id, flow.flow_id));
+    (void)ns;
+    (void)port_id;
+    /*
+     * Source-rate allocation answers how much additional traffic the source may
+     * inject.  Once the source is closed it no longer needs an advertised share,
+     * even though already-injected tail data may remain staged or buffered.
+     * Physical egress still services that tail under the normal per-interval
+     * capacity constraint, so removing it here cannot create link capacity.
+     */
+    return flow.rate_ready && !flow.source_closed;
 }
 
 static int active_rate_flow_count_on_port(const switch_state* ns, int port_id) {
@@ -3213,6 +3414,27 @@ static int active_rate_flow_count_on_port(const switch_state* ns, int port_id) {
         }
     }
     return active;
+}
+
+/*
+ * Max-min allocation is a property of the complete active-flow set on an
+ * output port.  A join or leave can therefore change the allocation of every
+ * surviving flow on that port.  Keep the trigger centralized so registration,
+ * data-arrival fallback, and flow completion all request the same port-wide
+ * reevaluation.
+ *
+ * handle_switch_rate_eval() already gathers every active flow on the port,
+ * applies each flow's downstream advertised-rate cap, recomputes max-min
+ * allocations, and propagates RATE_UPDATE only for allocations that materially
+ * changed.
+ */
+static void request_rate_eval_if_active_set_changed(switch_state* ns, int port_id,
+                                                    int active_before, int active_after,
+                                                    int interval_id, tw_lp* lp,
+                                                    fluid_msg* cause_msg) {
+    if (active_after != active_before) {
+        request_switch_rate_eval(ns, interval_id, port_id, lp, cause_msg);
+    }
 }
 
 static bool rate_mbps_materially_changed(double before_mbps, double after_mbps) {
@@ -3435,7 +3657,6 @@ static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
         switch_rate_flow& flow = flows[rc_msg->rc_rate_flow_index];
         rc_msg->rc_rate_flow_before = flow;
         flow.ingress_id = m->rc_ingress_id;
-        flow.final_segment_seen |= m->final_segment_sent;
         flow.rate_ready |= rate_ready;
         return;
     }
@@ -3446,7 +3667,7 @@ static void observe_rate_flow(switch_state* ns, int port_id, const fluid_msg* m,
     new_flow.source_terminal = m->source_terminal;
     new_flow.destination_terminal = m->destination_terminal;
     new_flow.ingress_id = m->rc_ingress_id;
-    new_flow.final_segment_seen = m->final_segment_sent;
+    new_flow.source_closed = 0;
     new_flow.rate_ready = rate_ready;
     new_flow.downstream_rate_mbps = std::numeric_limits<double>::infinity();
     new_flow.downstream_rate_epoch = -1;
@@ -3504,6 +3725,47 @@ static void send_rate_feedback_upstream(switch_state* ns, const switch_rate_flow
         schedule_switch_rate_feedback(interval_id, ingress.peer_index, ns->switch_id, flow.flow_id,
                                       flow.source_terminal, flow.destination_terminal, rate_mbps,
                                       rate_epoch, scope_key_type, scope_key_index, lp);
+    }
+}
+
+static void handle_flow_source_close(switch_state* ns, fluid_msg* m, tw_lp* lp) {
+    m->rc_rate_flow_created = 0;
+    m->rc_rate_flow_appended = 0;
+    m->rc_rate_flow_index = -1;
+    m->rc_rate_eval_request_created = 0;
+    m->rc_no_route = 0;
+
+    const int port_id = output_port_for_destination(ns, m->destination_terminal);
+    if (port_id < 0) {
+        m->rc_no_route = 1;
+        return;
+    }
+    m->rc_port_id = port_id;
+
+    if (m->source_switch < 0) {
+        m->rc_ingress_id = find_ingress_link(ns, 1, m->source_terminal);
+    } else {
+        m->rc_ingress_id = find_ingress_link(ns, 0, m->source_switch);
+    }
+    if (m->rc_ingress_id < 0) {
+        tw_error(TW_LOC, "switch %d could not identify source-close ingress for flow %llu",
+                 ns->switch_id, (unsigned long long)m->flow_id);
+    }
+
+    const int active_before = active_rate_flow_count_on_port(ns, port_id);
+    observe_rate_flow(ns, port_id, m, 0, m);
+    switch_rate_flow& flow = ns->rate_flows[port_id][m->rc_rate_flow_index];
+    flow.source_closed = 1;
+    const int active_after = active_rate_flow_count_on_port(ns, port_id);
+
+    request_rate_eval_if_active_set_changed(ns, port_id, active_before, active_after,
+                                            m->interval_id, lp, m);
+
+    const port_desc& port = ns->ports[port_id];
+    if (!port.is_terminal) {
+        schedule_flow_source_close(m->interval_id, port.target_index, ns->switch_id,
+                                   m->source_terminal, m->destination_terminal, m->flow_id,
+                                   m->creation_interval, lp);
     }
 }
 
@@ -3788,16 +4050,17 @@ static void handle_flow_rate_register(switch_state* ns, fluid_msg* m, tw_lp* lp)
 
     const port_desc& port = ns->ports[port_id];
     const int ready_here = port.is_terminal ? 1 : 0;
+    const int rate_active_before = active_rate_flow_count_on_port(ns, port_id);
     observe_rate_flow(ns, port_id, m, ready_here, m);
+    const int rate_active_after = active_rate_flow_count_on_port(ns, port_id);
 
     if (port.is_terminal) {
         /* The destination-facing access link is the end of registration.
-         * Start the existing max-min feedback wave here so every upstream
-         * switch receives a downstream-constrained rate before activating the
-         * new flow locally. */
-        if (m->rc_rate_flow_created || ready_here) {
-            request_switch_rate_eval(ns, m->interval_id, port_id, lp, m);
-        }
+         * A newly active flow changes the complete max-min set on this port,
+         * so reevaluate the port and advertise any changed allocations to all
+         * affected active flows. */
+        request_rate_eval_if_active_set_changed(ns, port_id, rate_active_before, rate_active_after,
+                                                m->interval_id, lp, m);
         return;
     }
 
@@ -3885,7 +4148,10 @@ static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     m->rc_log_active_after_entries = 0;
 
     /* Real data arrival is a fallback that makes the flow allocatable even
-     * if an older registration event was delayed or rolled back. */
+     * if an older registration event was delayed or rolled back.  Capture the
+     * active set before observing/staging the arrival because an existing
+     * rate-flow entry can become active here without being newly created. */
+    const int rate_active_before = active_rate_flow_count_on_port(ns, port_id);
     observe_rate_flow(ns, port_id, m, 1, m);
 
     const int prior_staged_index = find_staged_index_for_msg(ns, port_id, m);
@@ -3914,9 +4180,11 @@ static void handle_switch_arrival(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     if (staged_mbit > EPS) {
         request_switch_egress(ns, SWITCH_EGRESS_LATE, m->interval_id, port_id, lp, m);
     }
-    if (m->rc_rate_flow_created) {
-        request_switch_rate_eval(ns, m->interval_id, port_id, lp, m);
-    }
+
+    /* Real data can still activate a proactively registered rate-flow entry. */
+    const int rate_active_after = active_rate_flow_count_on_port(ns, port_id);
+    request_rate_eval_if_active_set_changed(ns, port_id, rate_active_before, rate_active_after,
+                                            m->interval_id, lp, m);
 }
 
 
@@ -4197,9 +4465,8 @@ static void handle_switch_egress(switch_state* ns, fluid_msg* m, tw_lp* lp) {
     }
 
     const int rate_active_after = active_rate_flow_count_on_port(ns, port_id);
-    if (rate_active_after != rate_active_before) {
-        request_switch_rate_eval(ns, m->interval_id, port_id, lp, m);
-    }
+    request_rate_eval_if_active_set_changed(ns, port_id, rate_active_before, rate_active_after,
+                                            m->interval_id, lp, m);
     if (std::fabs(shared_queued_after - shared_queued_before) > EPS) {
         request_ethernet_pause_eval(ns, m->interval_id, lp, m);
     }
@@ -4241,6 +4508,9 @@ static void switch_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp) {
     switch (m->event_type) {
     case FLOW_RATE_REGISTER:
         handle_flow_rate_register(ns, m, lp);
+        break;
+    case FLOW_SOURCE_CLOSE:
+        handle_flow_source_close(ns, m, lp);
         break;
     case FLUID_SEGMENT_ARRIVAL:
         handle_switch_arrival(ns, m, lp);
@@ -4480,6 +4750,11 @@ static void switch_rev_event(switch_state* ns, tw_bf* b, fluid_msg* m, tw_lp* lp
     switch (m->event_type) {
     case FLOW_RATE_REGISTER:
         rollback_flow_rate_register(ns, m);
+        break;
+
+    case FLOW_SOURCE_CLOSE:
+        undo_requested_switch_rate_eval(ns, m);
+        rollback_rate_flow_observation(ns, m);
         break;
 
     case FLUID_SEGMENT_ARRIVAL:
@@ -4832,9 +5107,10 @@ int main(int argc, char** argv) {
     if (rank == 0) {
         printf("fluid-flow-wan config: workload=%s switches=%zu terminals=%zu "
                "interval_seconds=%.6f num_send_intervals=%d num_drain_intervals=%d "
-               "backpressure_delay_ms=%.6f ",
+               "backpressure_delay_ms=%.6f pause_enabled=%d ",
                configured_workload_name, switches.size(), terminals.size(), cfg.interval_seconds,
-               cfg.num_send_intervals, cfg.num_drain_intervals, cfg.backpressure_delay_ms);
+               cfg.num_send_intervals, cfg.num_drain_intervals, cfg.backpressure_delay_ms,
+               cfg.pause_enabled);
 
         if (configured_workload_mode == FLUID_WORKLOAD_RANDOM_TRAFFIC) {
             printf("flow_generation_every_n_intervals=%d random_flow_min_%s=%.6f "

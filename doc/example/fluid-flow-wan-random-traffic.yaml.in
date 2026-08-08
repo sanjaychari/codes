@@ -54,6 +54,8 @@ sections:
     # Per-ingress Ethernet PAUSE hysteresis using the shared switch buffer.
     # Congested switches pause the largest ingress contributors first. The
     # fluid model keeps PAUSE asserted until a low-watermark resume is sent.
+    # Set pause_enabled to 0 to isolate rate sharing from PAUSE/RESUME.
+    pause_enabled: 1
     pause_high_watermark_fraction: 0.80
     pause_low_watermark_fraction: 0.50
 
