@@ -68,6 +68,9 @@ fi
 mkdir -p ross/build
 pushd ross/build
 
+mkdir -p bin
+ROSS_INSTALL_PREFIX="$(cd bin && pwd)"
+
 # ---- CODES CUDA arch autodetection from CUDA_HOME ----
 # CUDA is opt-in: set CUDA_HOME to enable GPU/Torch CUDA compilation.
 # The script derives CMAKE_CUDA_ARCHITECTURES, CUDAARCHS, and
@@ -133,8 +136,11 @@ else
 fi
 # ---- end CODES CUDA arch autodetection ----
 
-cmake .. -DROSS_BUILD_MODELS=ON -DCMAKE_INSTALL_PREFIX="$(realpath ./bin)" \
-  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-g -Wall"
+cmake .. \
+  -DROSS_BUILD_MODELS=ON \
+  -DCMAKE_INSTALL_PREFIX="$ROSS_INSTALL_PREFIX" \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_C_FLAGS="-g -Wall"
 #make VERBOSE=1
 make install -j4
 err=$?
@@ -224,6 +230,9 @@ fi
 
 mkdir -p codes/build
 pushd codes/build
+
+mkdir -p bin
+CODES_INSTALL_PREFIX="$(cd bin && pwd)"
 
 torch_cmake_prefix=""
 torch_dir=""
@@ -359,7 +368,7 @@ make_args_codes=(
     -DCMAKE_USE_PTHREADS_INIT=1
     -DCMAKE_USE_WIN32_THREADS_INIT=0
     -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
-    -DCMAKE_INSTALL_PREFIX="$(realpath bin)"
+    -DCMAKE_INSTALL_PREFIX="${CODES_INSTALL_PREFIX}"
 )
 # SWM/argobots/union are located via pkg-config. Their .pc files sit in the
 # in-tree autotools build dirs (e.g. swm/build/maint), which are NOT under a
