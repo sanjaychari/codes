@@ -537,6 +537,8 @@ struct switch_flow {
     double outgoing_rate = 0.0;
     double queued_data = 0.0;
     double total_data = 0.0;
+    tw_stime last_upstream_flow_event_arrival_ns = -1.0;
+    tw_stime last_downstream_flow_event_arrival_ns = -1.0;
 };
 
 struct switch_state {
@@ -577,6 +579,7 @@ struct terminal_flow {
     tw_stime predicted_complete_ns = -1.0;
     tw_stime start_ns = 0.0;
     tw_stime finish_ns = -1.0;
+    tw_stime last_downstream_flow_event_arrival_ns = -1.0;
 };
 
 struct terminal_state {
@@ -632,6 +635,8 @@ struct rate_msg {
     double rc_prev_outgoing_rates[MAX_FLOWS_PER_LP];
     int rc_prev_pause_received[MAX_FLOWS_PER_LP];
     int rc_prev_pause_sent[MAX_FLOWS_PER_LP];
+    tw_stime rc_prev_last_upstream_flow_event_arrival_ns[MAX_FLOWS_PER_LP];
+    tw_stime rc_prev_last_downstream_flow_event_arrival_ns[MAX_FLOWS_PER_LP];
     int rc_prev_port_paused[MAX_PORTS_PER_SWITCH];
     int rc_terminal_multi = 0;
     double rc_terminal_remaining[MAX_FLOWS_PER_LP];
@@ -745,6 +750,10 @@ static void snapshot_switch_for_rc(switch_state* ns, rate_msg* m) {
         m->rc_prev_outgoing_rates[i] = ns->flows[i].outgoing_rate;
         m->rc_prev_pause_received[i] = ns->flows[i].pause_received;
         m->rc_prev_pause_sent[i] = ns->flows[i].pause_sent;
+        m->rc_prev_last_upstream_flow_event_arrival_ns[i] =
+            ns->flows[i].last_upstream_flow_event_arrival_ns;
+        m->rc_prev_last_downstream_flow_event_arrival_ns[i] =
+            ns->flows[i].last_downstream_flow_event_arrival_ns;
     }
     for (int p = 0; p < ns->num_ports; ++p) m->rc_prev_port_paused[p] = ns->ports[p].paused;
 }
@@ -761,6 +770,10 @@ static void restore_switch_from_rc(switch_state* ns, rate_msg* m) {
         ns->flows[i].outgoing_rate = m->rc_prev_outgoing_rates[i];
         ns->flows[i].pause_received = m->rc_prev_pause_received[i];
         ns->flows[i].pause_sent = m->rc_prev_pause_sent[i];
+        ns->flows[i].last_upstream_flow_event_arrival_ns =
+            m->rc_prev_last_upstream_flow_event_arrival_ns[i];
+        ns->flows[i].last_downstream_flow_event_arrival_ns =
+            m->rc_prev_last_downstream_flow_event_arrival_ns[i];
     }
     for (int p = 0; p < ns->num_ports; ++p) ns->ports[p].paused = m->rc_prev_port_paused[p];
     if (m->rc_flow_created) {
@@ -864,34 +877,44 @@ static void schedule_event(tw_lpid gid, int type, const rate_msg& src, double de
     tw_event_send(e);
 }
 
-static void send_rate_feedback_upstream(switch_state* ns, const switch_flow& f, double rate, tw_lp* lp) {
+/*
+ * Per-flow state events use physical link latency plus a superdense-time
+ * ordering epsilon when more than one such event for the same flow and
+ * direction would otherwise arrive at the same timestamp.  The epsilon is
+ * not modeled propagation delay; it only preserves the sender's causal
+ * generation order at the receiver.
+ */
+static void schedule_ordered_flow_event(tw_lpid gid, int type, const rate_msg& src,
+                                        double physical_delay_seconds,
+                                        tw_stime* last_arrival_ns, tw_lp* lp) {
+    const double physical_delay_ns =
+        std::max(seconds_to_ns(physical_delay_seconds), g_tw_lookahead + 1.0);
+    tw_stime target = tw_now(lp) + physical_delay_ns;
+    if (*last_arrival_ns >= 0.0 && target <= *last_arrival_ns + 0.5)
+        target = *last_arrival_ns + 1.0;
+    *last_arrival_ns = target;
+    schedule_event(gid, type, src, ns_to_seconds(target - tw_now(lp)), lp);
+}
+
+static void send_rate_feedback_upstream(switch_state* ns, switch_flow& f, double rate, tw_lp* lp) {
     rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
     out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id; out.rate = rate;
     out.total_data = f.total_data;
     tw_lpid gid = f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer) : get_switch_gid(f.ingress_peer);
-    schedule_event(gid, RATE_FEEDBACK, out, cfg.link_latency_seconds, lp);
+    schedule_ordered_flow_event(gid, RATE_FEEDBACK, out, cfg.link_latency_seconds,
+                                &f.last_upstream_flow_event_arrival_ns, lp);
 }
 
-static void send_data_update_downstream(switch_state* ns, const switch_flow& f, double rate, tw_lp* lp) {
+static void send_data_update_downstream(switch_state* ns, switch_flow& f, double rate, tw_lp* lp) {
     const port_desc& p = ns->ports[f.port_id];
     rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
     out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id; out.rate = rate;
     out.total_data = f.total_data;
     tw_lpid gid = p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
 
-    /*
-     * FLOW_REGISTER establishes the downstream per-flow state.  Multiple
-     * registrations at the same simulated timestamp can immediately change
-     * an already-registered flow's allocation, producing a DATA_RATE_UPDATE
-     * with the same physical link latency as its just-sent FLOW_REGISTER.
-     * ROSS does not guarantee a semantic ordering between equal-timestamp
-     * events, so give DATA_RATE_UPDATE a 1 ns superdense-time ordering
-     * epsilon.  This is an ordering convention, not modeled propagation
-     * latency; the physical link latency remains cfg.link_latency_seconds.
-     */
-    const double ordering_epsilon_seconds = ns_to_seconds(1.0);
-    schedule_event(gid, DATA_RATE_UPDATE, out,
-                   cfg.link_latency_seconds + ordering_epsilon_seconds, lp);
+    schedule_ordered_flow_event(
+        gid, DATA_RATE_UPDATE, out, cfg.link_latency_seconds,
+        &f.last_downstream_flow_event_arrival_ns, lp);
 }
 
 static void recompute_switch(switch_state* ns, tw_lp* lp, bool emit,
@@ -992,7 +1015,7 @@ static void schedule_next_threshold(switch_state* ns, tw_lp* lp) {
     schedule_event(lp->gid, event_type, out, ns_to_seconds(target - tw_now(lp)), lp);
 }
 
-static void send_pause_upstream(switch_state* ns, const switch_flow& f, int asserted, tw_lp* lp) {
+static void send_pause_upstream(switch_state* ns, switch_flow& f, int asserted, tw_lp* lp) {
     rate_msg out{};
     out.flow_id = f.flow_id;
     out.source_terminal = f.source_terminal;
@@ -1002,7 +1025,8 @@ static void send_pause_upstream(switch_state* ns, const switch_flow& f, int asse
     out.total_data = f.total_data;
     const tw_lpid gid = f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer)
                                                : get_switch_gid(f.ingress_peer);
-    schedule_event(gid, PAUSE_UPDATE, out, cfg.link_latency_seconds, lp);
+    schedule_ordered_flow_event(gid, PAUSE_UPDATE, out, cfg.link_latency_seconds,
+                                &f.last_upstream_flow_event_arrival_ns, lp);
 }
 
 static void pause_high_rate_contributors(switch_state* ns, tw_lp* lp) {
@@ -1039,13 +1063,14 @@ static void resume_paused_contributors(switch_state* ns, tw_lp* lp) {
     }
 }
 
-static void forward_flow_complete(switch_state* ns, const switch_flow& f, tw_lp* lp) {
+static void forward_flow_complete(switch_state* ns, switch_flow& f, tw_lp* lp) {
     const port_desc& p = ns->ports[f.port_id];
     rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
     out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id;
     out.total_data = f.total_data;
     tw_lpid gid = p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
-    schedule_event(gid, FLOW_COMPLETE, out, cfg.link_latency_seconds, lp);
+    schedule_ordered_flow_event(gid, FLOW_COMPLETE, out, cfg.link_latency_seconds,
+                                &f.last_downstream_flow_event_arrival_ns, lp);
 }
 
 static void switch_init(switch_state* ns, tw_lp* lp) {
@@ -1075,6 +1100,8 @@ static int create_switch_flow(switch_state* ns, const rate_msg* m) {
     int i = ns->flow_count++; switch_flow& f = ns->flows[i]; std::memset(&f, 0, sizeof(f));
     f.valid = 1; f.flow_id = m->flow_id; f.source_terminal = m->source_terminal; f.destination_terminal = m->destination_terminal;
     f.total_data = m->total_data;
+    f.last_upstream_flow_event_arrival_ns = -1.0;
+    f.last_downstream_flow_event_arrival_ns = -1.0;
     f.ingress_is_terminal = (m->source_switch < 0); f.ingress_peer = f.ingress_is_terminal ? m->source_terminal : m->source_switch;
     f.port_id = output_port_for_destination(ns, m->destination_terminal);
     if (f.port_id < 0) tw_error(TW_LOC, "switch %d has no route to terminal %d", ns->switch_id, m->destination_terminal);
@@ -1119,7 +1146,8 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         out.path_cap_rate = std::min(f.path_cap_rate, p.capacity_rate);
         const tw_lpid gid =
             p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
-        schedule_event(gid, FLOW_REGISTER, out, cfg.link_latency_seconds, lp);
+        schedule_ordered_flow_event(gid, FLOW_REGISTER, out, cfg.link_latency_seconds,
+                                    &f.last_downstream_flow_event_arrival_ns, lp);
     } else if (m->event_type == RATE_FEEDBACK) {
         int i = find_switch_flow(ns, m->flow_id); if (i < 0) tw_error(TW_LOC, "RATE_FEEDBACK for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
@@ -1158,6 +1186,20 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             return;
         }
         ns->next_threshold_ns = -1.0;
+
+        /* A per-flow queue can drain at exactly the same instant that the
+         * shared buffer reaches the PAUSE low watermark.  schedule_next_threshold()
+         * keeps only the earliest predicted switch event, so QUEUE_DRAIN can win
+         * that tie.  In that case the LOW BUFFER_THRESHOLD is no longer
+         * schedulable after advance_switch_state() has moved occupancy exactly to
+         * the watermark.  Honor the coincident LOW crossing here so paused
+         * upstream contributors always receive their RESUME. */
+        if (cfg.pause_enabled && ns->pause_active &&
+            switch_buffer_total(ns) <= ns->low_watermark + EPS) {
+            ns->pause_active = 0;
+            resume_paused_contributors(ns, lp);
+        }
+
         recompute_switch(ns, lp, true);
     } else if (m->event_type == FLOW_COMPLETE) {
         int i = find_switch_flow(ns, m->flow_id); if (i < 0) tw_error(TW_LOC, "FLOW_COMPLETE for unknown flow %llu", m->flow_id);
@@ -1200,13 +1242,17 @@ static int create_terminal_flow(terminal_state* ns, const rate_msg* m, tw_stime 
     int i = ns->flow_count++; terminal_flow& f = ns->flows[i]; std::memset(&f, 0, sizeof(f));
     f.valid = 1; f.flow_id = m->flow_id; f.source_terminal = m->source_terminal; f.destination_terminal = m->destination_terminal;
     f.total_data = m->total_data; f.remaining_data = m->total_data; f.start_ns = now; f.last_source_update_ns = now; f.last_dest_update_ns = now;
-    f.predicted_complete_ns = -1.0; f.finish_ns = -1.0; return i;
+    f.predicted_complete_ns = -1.0; f.finish_ns = -1.0;
+    f.last_downstream_flow_event_arrival_ns = -1.0;
+    return i;
 }
 
 static void send_source_data_rate(terminal_state* ns, terminal_flow& f, double rate, tw_lp* lp) {
     rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal; out.destination_terminal = f.destination_terminal;
     out.source_switch = -1; out.rate = rate; out.total_data = f.total_data;
-    schedule_event(get_switch_gid(ns->attached_switch), DATA_RATE_UPDATE, out, cfg.link_latency_seconds, lp);
+    schedule_ordered_flow_event(
+        get_switch_gid(ns->attached_switch), DATA_RATE_UPDATE, out, cfg.link_latency_seconds,
+        &f.last_downstream_flow_event_arrival_ns, lp);
 }
 
 static void schedule_source_completion(terminal_flow& f, tw_lp* lp) {
@@ -1219,8 +1265,27 @@ static void schedule_source_completion(terminal_flow& f, tw_lp* lp) {
     schedule_event(lp->gid, FLOW_COMPLETE, out, ns_to_seconds(target - tw_now(lp)), lp);
 }
 
+static void complete_source_flow(terminal_state* ns, terminal_flow& f, tw_lp* lp) {
+    if (f.source_complete) return;
+    f.remaining_data = 0.0;
+    f.source_complete = 1;
+    f.predicted_complete_ns = -1.0;
+    if (f.send_rate > EPS) {
+        f.send_rate = 0.0;
+        send_source_data_rate(ns, f, 0.0, lp);
+    }
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.total_data = f.total_data;
+    schedule_ordered_flow_event(
+        get_switch_gid(ns->attached_switch), FLOW_COMPLETE, out, cfg.link_latency_seconds,
+        &f.last_downstream_flow_event_arrival_ns, lp);
+}
+
 static void maybe_mark_destination_complete(terminal_flow& f, tw_stime now) {
-    if (!f.destination_complete && f.close_received && f.receive_rate <= EPS && f.received_data + 1e-6 >= f.total_data) {
+    if (!f.destination_complete && f.close_received && f.receive_rate <= EPS) {
         f.destination_complete = 1; f.finish_ns = now;
     }
 }
@@ -1256,13 +1321,18 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         out.source_switch = -1;
         out.rate = initial_rate;
         out.path_cap_rate = initial_rate;
-        schedule_event(get_switch_gid(ns->attached_switch), FLOW_REGISTER, out,
-                       cfg.link_latency_seconds, lp);
+        schedule_ordered_flow_event(
+            get_switch_gid(ns->attached_switch), FLOW_REGISTER, out, cfg.link_latency_seconds,
+            &f.last_downstream_flow_event_arrival_ns, lp);
         schedule_source_completion(f, lp);
     } else if (m->event_type == RATE_FEEDBACK) {
         if (i < 0) tw_error(TW_LOC, "terminal RATE_FEEDBACK for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i]; advance_source_flow(f, tw_now(lp));
+        if (!f.source_complete && f.remaining_data <= 1e-6) {
+            complete_source_flow(ns, f, lp);
+            return;
+        }
         f.allowed_rate = std::max(0.0, m->rate);
         double new_rate = f.paused || f.source_complete ? 0.0 : f.allowed_rate;
         if (std::fabs(new_rate - f.send_rate) > EPS) { f.send_rate = new_rate; send_source_data_rate(ns, f, new_rate, lp); }
@@ -1273,6 +1343,10 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         terminal_flow& f = ns->flows[i];
         if (!f.source_complete) {
             advance_source_flow(f, tw_now(lp));
+            if (f.remaining_data <= 1e-6) {
+                complete_source_flow(ns, f, lp);
+                return;
+            }
             f.paused = m->pause_asserted ? 1 : 0;
             const double new_rate = f.paused ? 0.0 : f.allowed_rate;
             if (std::fabs(new_rate - f.send_rate) > EPS) {
@@ -1289,11 +1363,11 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         f.receive_rate = std::max(0.0, m->rate);
         maybe_mark_destination_complete(f, tw_now(lp));
     } else if (m->event_type == DATA_RATE_UPDATE) {
-        if (i < 0) { i = create_terminal_flow(ns, m, tw_now(lp)); m->rc_flow_created = 1; }
+        if (i < 0) tw_error(TW_LOC, "terminal DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i]; advance_dest_flow(f, tw_now(lp)); f.receive_rate = std::max(0.0, m->rate); maybe_mark_destination_complete(f, tw_now(lp));
     } else if (m->event_type == FLOW_COMPLETE) {
-        if (i < 0) { i = create_terminal_flow(ns, m, tw_now(lp)); m->rc_flow_created = 1; }
+        if (i < 0) tw_error(TW_LOC, "terminal FLOW_COMPLETE for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
         if (ns->terminal_id == f.source_terminal) {
@@ -1304,10 +1378,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             advance_source_flow(f, tw_now(lp));
             if (m->expected_time_ns >= 0.0 && std::fabs((double)(m->expected_time_ns - f.predicted_complete_ns)) > 0.5) return;
             if (f.remaining_data > 1e-6) return;
-            f.remaining_data = 0.0; f.source_complete = 1; f.predicted_complete_ns = -1.0;
-            if (f.send_rate > EPS) { f.send_rate = 0.0; send_source_data_rate(ns, f, 0.0, lp); }
-            rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal; out.destination_terminal = f.destination_terminal; out.total_data = f.total_data;
-            schedule_event(get_switch_gid(ns->attached_switch), FLOW_COMPLETE, out, cfg.link_latency_seconds, lp);
+            complete_source_flow(ns, f, lp);
         } else if (ns->terminal_id == f.destination_terminal) {
             advance_dest_flow(f, tw_now(lp)); f.close_received = 1; maybe_mark_destination_complete(f, tw_now(lp));
         }
