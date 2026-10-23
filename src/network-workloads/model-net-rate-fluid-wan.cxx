@@ -878,7 +878,20 @@ static void send_data_update_downstream(switch_state* ns, const switch_flow& f, 
     out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id; out.rate = rate;
     out.total_data = f.total_data;
     tw_lpid gid = p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
-    schedule_event(gid, DATA_RATE_UPDATE, out, cfg.link_latency_seconds, lp);
+
+    /*
+     * FLOW_REGISTER establishes the downstream per-flow state.  Multiple
+     * registrations at the same simulated timestamp can immediately change
+     * an already-registered flow's allocation, producing a DATA_RATE_UPDATE
+     * with the same physical link latency as its just-sent FLOW_REGISTER.
+     * ROSS does not guarantee a semantic ordering between equal-timestamp
+     * events, so give DATA_RATE_UPDATE a 1 ns superdense-time ordering
+     * epsilon.  This is an ordering convention, not modeled propagation
+     * latency; the physical link latency remains cfg.link_latency_seconds.
+     */
+    const double ordering_epsilon_seconds = ns_to_seconds(1.0);
+    schedule_event(gid, DATA_RATE_UPDATE, out,
+                   cfg.link_latency_seconds + ordering_epsilon_seconds, lp);
 }
 
 static void recompute_switch(switch_state* ns, tw_lp* lp, bool emit,
