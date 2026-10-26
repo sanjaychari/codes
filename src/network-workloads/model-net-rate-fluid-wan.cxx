@@ -151,21 +151,27 @@ static double seconds_to_output_time(double seconds) {
     return output_time_unit == TIME_UNIT_S ? seconds : seconds * 1000.0;
 }
 
-static double seconds_to_ns(double seconds) { return seconds * 1.0e9; }
-static double ns_to_seconds(tw_stime ns) { return ((double)ns) / 1.0e9; }
+static double seconds_to_ns(double seconds) {
+    return seconds * 1.0e9;
+}
+static double ns_to_seconds(tw_stime ns) {
+    return ((double)ns) / 1.0e9;
+}
 
 static std::string trim(const std::string& s) {
     size_t b = 0;
-    while (b < s.size() && std::isspace((unsigned char)s[b])) ++b;
+    while (b < s.size() && std::isspace((unsigned char)s[b]))
+        ++b;
     size_t e = s.size();
-    while (e > b && std::isspace((unsigned char)s[e - 1])) --e;
+    while (e > b && std::isspace((unsigned char)s[e - 1]))
+        --e;
     return s.substr(b, e - b);
 }
 
 static std::string strip_quotes(std::string s) {
     s = trim(s);
-    if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') ||
-                          (s.front() == '\'' && s.back() == '\'')))
+    if (s.size() >= 2 &&
+        ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\'')))
         return s.substr(1, s.size() - 2);
     return s;
 }
@@ -175,23 +181,31 @@ static std::string remove_inline_comment(const std::string& s) {
     char quote = 0;
     for (size_t i = 0; i < s.size(); ++i) {
         if ((s[i] == '"' || s[i] == '\'') && (i == 0 || s[i - 1] != '\\')) {
-            if (!in_quote) { in_quote = true; quote = s[i]; }
-            else if (quote == s[i]) { in_quote = false; quote = 0; }
+            if (!in_quote) {
+                in_quote = true;
+                quote = s[i];
+            } else if (quote == s[i]) {
+                in_quote = false;
+                quote = 0;
+            }
         }
-        if (!in_quote && s[i] == '#') return s.substr(0, i);
+        if (!in_quote && s[i] == '#')
+            return s.substr(0, i);
     }
     return s;
 }
 
 static int leading_spaces(const std::string& s) {
     int n = 0;
-    while (n < (int)s.size() && s[n] == ' ') ++n;
+    while (n < (int)s.size() && s[n] == ' ')
+        ++n;
     return n;
 }
 
 static bool split_key_value(const std::string& line, std::string* key, std::string* value) {
     size_t p = line.find(':');
-    if (p == std::string::npos) return false;
+    if (p == std::string::npos)
+        return false;
     *key = trim(line.substr(0, p));
     *value = trim(line.substr(p + 1));
     return !key->empty();
@@ -202,9 +216,15 @@ static std::vector<std::string> split_csv(const std::string& line) {
     std::string cur;
     bool quote = false;
     for (char c : line) {
-        if (c == '"') { quote = !quote; continue; }
-        if (c == ',' && !quote) { out.push_back(trim(cur)); cur.clear(); }
-        else cur.push_back(c);
+        if (c == '"') {
+            quote = !quote;
+            continue;
+        }
+        if (c == ',' && !quote) {
+            out.push_back(trim(cur));
+            cur.clear();
+        } else
+            cur.push_back(c);
     }
     out.push_back(trim(cur));
     return out;
@@ -217,7 +237,8 @@ static double parse_number_and_suffix(const std::string& raw, std::string* suffi
     double v = std::strtod(s.c_str(), &end);
     if (errno == ERANGE || end == s.c_str() || !std::isfinite(v) || v < 0.0)
         tw_error(TW_LOC, "invalid quantity '%s'", raw.c_str());
-    while (*end && std::isspace((unsigned char)*end)) ++end;
+    while (*end && std::isspace((unsigned char)*end))
+        ++end;
     *suffix = trim(end);
     return v;
 }
@@ -225,8 +246,14 @@ static double parse_number_and_suffix(const std::string& raw, std::string* suffi
 static double parse_rate_to_mbps(const std::string& raw) {
     std::string u;
     double v = parse_number_and_suffix(raw, &u);
-    if (u == "Mbps") { units_seen.saw_mbps = true; return v; }
-    if (u == "Gbps") { units_seen.saw_gbps = true; return v * 1000.0; }
+    if (u == "Mbps") {
+        units_seen.saw_mbps = true;
+        return v;
+    }
+    if (u == "Gbps") {
+        units_seen.saw_gbps = true;
+        return v * 1000.0;
+    }
     tw_error(TW_LOC, "rate '%s' must use Mbps or Gbps", raw.c_str());
     return 0.0;
 }
@@ -250,8 +277,7 @@ static double parse_data_to_mb(const std::string& raw, bool observe_output_unit)
         return v / 8.0;
     if (u == "Gb")
         return v * 125.0;
-    tw_error(TW_LOC,
-             "data quantity '%s' must use MB or GB (legacy Mb/Gb accepted for buffers)",
+    tw_error(TW_LOC, "data quantity '%s' must use MB or GB (legacy Mb/Gb accepted for buffers)",
              raw.c_str());
     return 0.0;
 }
@@ -260,22 +286,27 @@ static double parse_time_to_seconds(const std::string& raw, bool observe_output_
     std::string u;
     double v = parse_number_and_suffix(raw, &u);
     if (u == "s" || u == "sec" || u == "second" || u == "seconds") {
-        if (observe_output_unit) units_seen.saw_s = true;
+        if (observe_output_unit)
+            units_seen.saw_s = true;
         return v;
     }
     if (u == "ms" || u == "millisecond" || u == "milliseconds") {
-        if (observe_output_unit) units_seen.saw_ms = true;
+        if (observe_output_unit)
+            units_seen.saw_ms = true;
         return v / 1000.0;
     }
-    if (u == "us" || u == "microsecond" || u == "microseconds") return v / 1.0e6;
-    if (u == "ns" || u == "nanosecond" || u == "nanoseconds") return v / 1.0e9;
+    if (u == "us" || u == "microsecond" || u == "microseconds")
+        return v / 1.0e6;
+    if (u == "ns" || u == "nanosecond" || u == "nanoseconds")
+        return v / 1.0e9;
     tw_error(TW_LOC, "time quantity '%s' must use s, ms, us, or ns", raw.c_str());
     return 0.0;
 }
 
 static int get_or_add_switch(const std::string& name) {
     auto it = switch_name_to_id.find(name);
-    if (it != switch_name_to_id.end()) return it->second;
+    if (it != switch_name_to_id.end())
+        return it->second;
     int id = (int)switches.size();
     raw_switch_info sw;
     sw.name = name;
@@ -286,7 +317,10 @@ static int get_or_add_switch(const std::string& name) {
 
 static void add_or_update_link(int src, int dst, double mbps) {
     for (auto& l : switches[src].links) {
-        if (l.dst_switch == dst) { l.bandwidth = mbps; return; }
+        if (l.dst_switch == dst) {
+            l.bandwidth = mbps;
+            return;
+        }
     }
     raw_link_info l;
     l.dst_switch = dst;
@@ -295,35 +329,60 @@ static void add_or_update_link(int src, int dst, double mbps) {
 }
 
 static void load_topology_yaml(const char* path) {
-    switches.clear(); terminals.clear(); switch_name_to_id.clear();
+    switches.clear();
+    terminals.clear();
+    switch_name_to_id.clear();
     std::ifstream in(path);
-    if (!in) tw_error(TW_LOC, "could not open topology file %s", path);
+    if (!in)
+        tw_error(TW_LOC, "could not open topology file %s", path);
     bool in_topology = false, in_switches = false, in_connections = false;
     int current_switch = -1, current_dst = -1;
     std::string raw;
     while (std::getline(in, raw)) {
         std::string nc = remove_inline_comment(raw);
-        if (trim(nc).empty()) continue;
+        if (trim(nc).empty())
+            continue;
         int indent = leading_spaces(nc);
         std::string line = trim(nc);
-        if (line == "topology:") { in_topology = true; in_switches = false; continue; }
-        if (in_topology && line == "switches:") { in_switches = true; current_switch = -1; continue; }
-        std::string key, value;
-        if (!split_key_value(line, &key, &value) || !in_switches) continue;
-        if (indent == 4 && value.empty()) {
-            current_switch = get_or_add_switch(key); in_connections = false; current_dst = -1; continue;
+        if (line == "topology:") {
+            in_topology = true;
+            in_switches = false;
+            continue;
         }
-        if (current_switch < 0) continue;
-        if (indent == 6 && key == "connections") { in_connections = true; current_dst = -1; continue; }
+        if (in_topology && line == "switches:") {
+            in_switches = true;
+            current_switch = -1;
+            continue;
+        }
+        std::string key, value;
+        if (!split_key_value(line, &key, &value) || !in_switches)
+            continue;
+        if (indent == 4 && value.empty()) {
+            current_switch = get_or_add_switch(key);
+            in_connections = false;
+            current_dst = -1;
+            continue;
+        }
+        if (current_switch < 0)
+            continue;
+        if (indent == 6 && key == "connections") {
+            in_connections = true;
+            current_dst = -1;
+            continue;
+        }
         if (!in_connections && indent >= 6) {
-            if (key == "terminals") switches[current_switch].terminal_count = std::atoi(strip_quotes(value).c_str());
-            else if (key == "terminal_bandwidth") switches[current_switch].terminal_bandwidth = parse_rate_to_mbps(value);
-            else if (key == "switch_buffer") switches[current_switch].switch_buffer = parse_data_to_mb(value, false);
+            if (key == "terminals")
+                switches[current_switch].terminal_count = std::atoi(strip_quotes(value).c_str());
+            else if (key == "terminal_bandwidth")
+                switches[current_switch].terminal_bandwidth = parse_rate_to_mbps(value);
+            else if (key == "switch_buffer")
+                switches[current_switch].switch_buffer = parse_data_to_mb(value, false);
             continue;
         }
         if (in_connections && indent == 8) {
             current_dst = get_or_add_switch(key);
-            if (!value.empty()) add_or_update_link(current_switch, current_dst, parse_rate_to_mbps(value));
+            if (!value.empty())
+                add_or_update_link(current_switch, current_dst, parse_rate_to_mbps(value));
             continue;
         }
         if (in_connections && indent >= 10 && current_dst >= 0 && key == "bandwidth")
@@ -333,32 +392,46 @@ static void load_topology_yaml(const char* path) {
     for (int s = 0; s < (int)switches.size(); ++s) {
         switches[s].terminal_start = start;
         for (int j = 0; j < switches[s].terminal_count; ++j) {
-            terminal_info t; t.switch_id = s;
-            std::ostringstream os; os << "T" << start; t.name = os.str();
-            terminals.push_back(t); ++start;
+            terminal_info t;
+            t.switch_id = s;
+            std::ostringstream os;
+            os << "T" << start;
+            t.name = os.str();
+            terminals.push_back(t);
+            ++start;
         }
     }
-    if (switches.empty()) tw_error(TW_LOC, "topology contains no switches");
-    if (terminals.size() < 2) tw_error(TW_LOC, "topology must contain at least two terminals");
+    if (switches.empty())
+        tw_error(TW_LOC, "topology contains no switches");
+    if (terminals.size() < 2)
+        tw_error(TW_LOC, "topology must contain at least two terminals");
 }
 
 static void load_flow_csv(const char* path) {
     flow_specs.clear();
     std::ifstream in(path);
-    if (!in) tw_error(TW_LOC, "could not open flow CSV %s", path);
-    std::string line; int lineno = 0; bool header = false; std::set<unsigned long long> ids;
+    if (!in)
+        tw_error(TW_LOC, "could not open flow CSV %s", path);
+    std::string line;
+    int lineno = 0;
+    bool header = false;
+    std::set<unsigned long long> ids;
     while (std::getline(in, line)) {
         ++lineno;
         std::string s = trim(remove_inline_comment(line));
-        if (s.empty()) continue;
+        if (s.empty())
+            continue;
         std::vector<std::string> f = split_csv(s);
         if (!header) {
             if (f.size() != 5 || f[0] != "start_time" || f[1] != "flow_id" ||
                 f[2] != "source_terminal" || f[3] != "destination_terminal" || f[4] != "size")
-                tw_error(TW_LOC, "flow CSV header must be start_time,flow_id,source_terminal,destination_terminal,size");
-            header = true; continue;
+                tw_error(TW_LOC, "flow CSV header must be "
+                                 "start_time,flow_id,source_terminal,destination_terminal,size");
+            header = true;
+            continue;
         }
-        if (f.size() != 5) tw_error(TW_LOC, "flow CSV %s line %d expected 5 fields", path, lineno);
+        if (f.size() != 5)
+            tw_error(TW_LOC, "flow CSV %s line %d expected 5 fields", path, lineno);
         char* end = nullptr;
         unsigned long long id = std::strtoull(f[1].c_str(), &end, 10);
         if (end == f[1].c_str() || *end != '\0' || !ids.insert(id).second)
@@ -367,52 +440,75 @@ static void load_flow_csv(const char* path) {
         if (end == f[2].c_str() || *end != '\0' || src < 0 || src >= (long)terminals.size())
             tw_error(TW_LOC, "invalid source_terminal '%s' at line %d", f[2].c_str(), lineno);
         long dst = std::strtol(f[3].c_str(), &end, 10);
-        if (end == f[3].c_str() || *end != '\0' || dst < 0 || dst >= (long)terminals.size() || dst == src)
+        if (end == f[3].c_str() || *end != '\0' || dst < 0 || dst >= (long)terminals.size() ||
+            dst == src)
             tw_error(TW_LOC, "invalid destination_terminal '%s' at line %d", f[3].c_str(), lineno);
         flow_spec fs;
-        fs.flow_id = id; fs.source_terminal = (int)src; fs.destination_terminal = (int)dst;
+        fs.flow_id = id;
+        fs.source_terminal = (int)src;
+        fs.destination_terminal = (int)dst;
         fs.start_seconds = parse_time_to_seconds(f[0], true);
         fs.size_data = parse_data_to_mb(f[4], true);
-        if (fs.size_data <= 0.0) tw_error(TW_LOC, "flow size must be positive at line %d", lineno);
+        if (fs.size_data <= 0.0)
+            tw_error(TW_LOC, "flow size must be positive at line %d", lineno);
         flow_specs.push_back(fs);
     }
-    if (!header || flow_specs.empty()) tw_error(TW_LOC, "flow CSV contains no flows");
+    if (!header || flow_specs.empty())
+        tw_error(TW_LOC, "flow CSV contains no flows");
     std::sort(flow_specs.begin(), flow_specs.end(), [](const flow_spec& a, const flow_spec& b) {
-        if (a.start_seconds != b.start_seconds) return a.start_seconds < b.start_seconds;
+        if (a.start_seconds != b.start_seconds)
+            return a.start_seconds < b.start_seconds;
         return a.flow_id < b.flow_id;
     });
 }
 
 static void finalize_units() {
-    simulation_rate_unit = (units_seen.saw_gbps && !units_seen.saw_mbps) ? RATE_UNIT_GBPS : RATE_UNIT_MBPS;
+    simulation_rate_unit =
+        (units_seen.saw_gbps && !units_seen.saw_mbps) ? RATE_UNIT_GBPS : RATE_UNIT_MBPS;
     simulation_data_unit = (units_seen.saw_gb && !units_seen.saw_mb) ? DATA_UNIT_GB : DATA_UNIT_MB;
     output_time_unit = (units_seen.saw_s && !units_seen.saw_ms) ? TIME_UNIT_S : TIME_UNIT_MS;
     for (auto& sw : switches) {
         sw.terminal_bandwidth = trim_rate_from_mbps(sw.terminal_bandwidth);
         sw.switch_buffer = trim_data_from_mb(sw.switch_buffer);
-        for (auto& l : sw.links) l.bandwidth = trim_rate_from_mbps(l.bandwidth);
+        for (auto& l : sw.links)
+            l.bandwidth = trim_rate_from_mbps(l.bandwidth);
     }
-    for (auto& f : flow_specs) f.size_data = trim_data_from_mb(f.size_data);
+    for (auto& f : flow_specs)
+        f.size_data = trim_data_from_mb(f.size_data);
 }
 
 static void compute_routes() {
     int n = (int)switches.size();
     next_switch_table.assign(n, std::vector<int>(n, -1));
     for (int src = 0; src < n; ++src) {
-        std::vector<int> prev(n, -1), seen(n, 0); std::queue<int> q;
-        seen[src] = 1; q.push(src);
+        std::vector<int> prev(n, -1), seen(n, 0);
+        std::queue<int> q;
+        seen[src] = 1;
+        q.push(src);
         while (!q.empty()) {
-            int u = q.front(); q.pop();
+            int u = q.front();
+            q.pop();
             for (const auto& l : switches[u].links) {
                 int v = l.dst_switch;
-                if (!seen[v]) { seen[v] = 1; prev[v] = u; q.push(v); }
+                if (!seen[v]) {
+                    seen[v] = 1;
+                    prev[v] = u;
+                    q.push(v);
+                }
             }
         }
         for (int dst = 0; dst < n; ++dst) {
-            if (dst == src) { next_switch_table[src][dst] = src; continue; }
-            if (!seen[dst]) continue;
+            if (dst == src) {
+                next_switch_table[src][dst] = src;
+                continue;
+            }
+            if (!seen[dst])
+                continue;
             int cur = dst, parent = prev[cur];
-            while (parent >= 0 && parent != src) { cur = parent; parent = prev[cur]; }
+            while (parent >= 0 && parent != src) {
+                cur = parent;
+                parent = prev[cur];
+            }
             next_switch_table[src][dst] = cur;
         }
     }
@@ -446,8 +542,7 @@ static void validate_topology_and_flows() {
             tw_error(TW_LOC, "switch %s switch_buffer must be positive", sw.name.c_str());
         for (const auto& link : sw.links) {
             if (link.bandwidth <= EPS) {
-                tw_error(TW_LOC, "switch %s has a non-positive link bandwidth",
-                         sw.name.c_str());
+                tw_error(TW_LOC, "switch %s has a non-positive link bandwidth", sw.name.c_str());
             }
         }
     }
@@ -456,8 +551,8 @@ static void validate_topology_and_flows() {
         const int src_switch = terminals[flow.source_terminal].switch_id;
         const int dst_switch = terminals[flow.destination_terminal].switch_id;
         if (src_switch != dst_switch && next_switch_table[src_switch][dst_switch] < 0) {
-            tw_error(TW_LOC, "flow %llu has no route from terminal %d to terminal %d",
-                     flow.flow_id, flow.source_terminal, flow.destination_terminal);
+            tw_error(TW_LOC, "flow %llu has no route from terminal %d to terminal %d", flow.flow_id,
+                     flow.source_terminal, flow.destination_terminal);
         }
     }
 }
@@ -473,10 +568,14 @@ static void read_string(const char* section, const char* key, char* dst, size_t 
         std::snprintf(dst, n, "%s", tmp);
 }
 static void read_int(const char* section, const char* key, int* v) {
-    int x = 0; if (configuration_get_value_int(&config, section, key, nullptr, &x) == 0) *v = x;
+    int x = 0;
+    if (configuration_get_value_int(&config, section, key, nullptr, &x) == 0)
+        *v = x;
 }
 static void read_double(const char* section, const char* key, double* v) {
-    double x = 0; if (configuration_get_value_double(&config, section, key, nullptr, &x) == 0) *v = x;
+    double x = 0;
+    if (configuration_get_value_double(&config, section, key, nullptr, &x) == 0)
+        *v = x;
 }
 static void read_time(const char* section, const char* key, double* seconds) {
     char tmp[128] = {0};
@@ -488,19 +587,25 @@ static void load_config() {
     units_seen = unit_observation{};
     read_relpath("RATE_FLUID_WAN", "topology_file", cfg.topology_file, sizeof(cfg.topology_file));
     read_relpath("RATE_FLUID_WAN", "flow_file", cfg.flow_file, sizeof(cfg.flow_file));
-    read_string("RATE_FLUID_WAN", "flow_summary_file", cfg.flow_summary_file, sizeof(cfg.flow_summary_file));
+    read_string("RATE_FLUID_WAN", "flow_summary_file", cfg.flow_summary_file,
+                sizeof(cfg.flow_summary_file));
     read_time("RATE_FLUID_WAN", "link_latency", &cfg.link_latency_seconds);
     read_int("RATE_FLUID_WAN", "pause_enabled", &cfg.pause_enabled);
-    read_double("RATE_FLUID_WAN", "pause_high_watermark_fraction", &cfg.pause_high_watermark_fraction);
-    read_double("RATE_FLUID_WAN", "pause_low_watermark_fraction", &cfg.pause_low_watermark_fraction);
+    read_double("RATE_FLUID_WAN", "pause_high_watermark_fraction",
+                &cfg.pause_high_watermark_fraction);
+    read_double("RATE_FLUID_WAN", "pause_low_watermark_fraction",
+                &cfg.pause_low_watermark_fraction);
     read_int("RATE_FLUID_WAN", "debug", &cfg.debug);
-    if (!cfg.topology_file[0] || !cfg.flow_file[0]) tw_error(TW_LOC, "RATE_FLUID_WAN requires topology_file and flow_file");
-    if (cfg.link_latency_seconds <= 0.0) tw_error(TW_LOC, "link_latency must be positive");
+    if (!cfg.topology_file[0] || !cfg.flow_file[0])
+        tw_error(TW_LOC, "RATE_FLUID_WAN requires topology_file and flow_file");
+    if (cfg.link_latency_seconds <= 0.0)
+        tw_error(TW_LOC, "link_latency must be positive");
     if (!(cfg.pause_low_watermark_fraction >= 0.0 &&
           cfg.pause_low_watermark_fraction < cfg.pause_high_watermark_fraction &&
           cfg.pause_high_watermark_fraction <= 1.0))
         tw_error(TW_LOC, "PAUSE watermarks must satisfy 0 <= low < high <= 1");
-    if (cfg.pause_enabled != 0 && cfg.pause_enabled != 1) tw_error(TW_LOC, "pause_enabled must be 0 or 1");
+    if (cfg.pause_enabled != 0 && cfg.pause_enabled != 1)
+        tw_error(TW_LOC, "pause_enabled must be 0 or 1");
     load_topology_yaml(cfg.topology_file);
     load_flow_csv(cfg.flow_file);
     finalize_units();
@@ -509,14 +614,26 @@ static void load_config() {
 }
 
 static tw_lpid get_switch_gid(int id) {
-    tw_lpid gid = 0; codes_mapping_get_lp_id(GROUP_NAME, SWITCH_LP_NAME, nullptr, 1, 0, id, &gid); return gid;
+    tw_lpid gid = 0;
+    codes_mapping_get_lp_id(GROUP_NAME, SWITCH_LP_NAME, nullptr, 1, 0, id, &gid);
+    return gid;
 }
 static tw_lpid get_terminal_gid(int id) {
-    tw_lpid gid = 0; codes_mapping_get_lp_id(GROUP_NAME, TERMINAL_LP_NAME, nullptr, 1, 0, id, &gid); return gid;
+    tw_lpid gid = 0;
+    codes_mapping_get_lp_id(GROUP_NAME, TERMINAL_LP_NAME, nullptr, 1, 0, id, &gid);
+    return gid;
 }
 
-struct ingress_desc { int is_terminal = 0; int peer_index = -1; };
-struct port_desc { int is_terminal = 0; int target_index = -1; double capacity_rate = 0.0; int paused = 0; };
+struct ingress_desc {
+    int is_terminal = 0;
+    int peer_index = -1;
+};
+struct port_desc {
+    int is_terminal = 0;
+    int target_index = -1;
+    double capacity_rate = 0.0;
+    int paused = 0;
+};
 
 struct switch_flow {
     int valid = 0;
@@ -647,47 +764,63 @@ struct rate_msg {
 };
 
 static_assert(std::is_trivially_copyable<rate_msg>::value, "rate_msg must be trivially copyable");
-static_assert(std::is_trivially_copyable<switch_state>::value, "switch_state must be trivially copyable");
-static_assert(std::is_trivially_copyable<terminal_state>::value, "terminal_state must be trivially copyable");
+static_assert(std::is_trivially_copyable<switch_state>::value,
+              "switch_state must be trivially copyable");
+static_assert(std::is_trivially_copyable<terminal_state>::value,
+              "terminal_state must be trivially copyable");
 
 static const char* event_name(int e) {
     switch (e) {
-    case FLOW_START: return "FLOW START";
-    case FLOW_REGISTER: return "FLOW REGISTER";
-    case DATA_RATE_UPDATE: return "DATA RATE UPDATE";
-    case RATE_FEEDBACK: return "RATE FEEDBACK";
-    case BUFFER_THRESHOLD: return "BUFFER THRESHOLD";
-    case PAUSE_UPDATE: return "PAUSE UPDATE";
-    case FLOW_COMPLETE: return "FLOW COMPLETE";
-    case QUEUE_DRAIN: return "QUEUE DRAIN";
-    default: return "UNKNOWN";
+    case FLOW_START:
+        return "FLOW START";
+    case FLOW_REGISTER:
+        return "FLOW REGISTER";
+    case DATA_RATE_UPDATE:
+        return "DATA RATE UPDATE";
+    case RATE_FEEDBACK:
+        return "RATE FEEDBACK";
+    case BUFFER_THRESHOLD:
+        return "BUFFER THRESHOLD";
+    case PAUSE_UPDATE:
+        return "PAUSE UPDATE";
+    case FLOW_COMPLETE:
+        return "FLOW COMPLETE";
+    case QUEUE_DRAIN:
+        return "QUEUE DRAIN";
+    default:
+        return "UNKNOWN";
     }
 }
 
 static void debug_terminal_event(const terminal_state* ns, const rate_msg* m, tw_lp* lp) {
-    if (!cfg.debug) return;
-    std::printf("%s(F%llu) at terminal %s at %.6f %s",
-                event_name(m->event_type), (unsigned long long)m->flow_id,
-                terminals[ns->terminal_id].name.c_str(),
+    if (!cfg.debug)
+        return;
+    std::printf("%s(F%llu) at terminal %s at %.6f %s", event_name(m->event_type),
+                (unsigned long long)m->flow_id, terminals[ns->terminal_id].name.c_str(),
                 seconds_to_output_time(ns_to_seconds(tw_now(lp))), time_unit_name());
     if (m->event_type == FLOW_REGISTER || m->event_type == DATA_RATE_UPDATE ||
         m->event_type == RATE_FEEDBACK)
         std::printf(" rate=%.6f %s", m->rate, rate_unit_name());
     if (m->event_type == PAUSE_UPDATE)
         std::printf(" state=%s", m->pause_asserted ? "PAUSE" : "RESUME");
-    std::printf("\n"); std::fflush(stdout);
+    std::printf("\n");
+    std::fflush(stdout);
 }
 
 static const char* threshold_name(int kind) {
     switch (kind) {
-    case THRESHOLD_HIGH: return "HIGH";
-    case THRESHOLD_LOW: return "LOW";
-    default: return "UNKNOWN";
+    case THRESHOLD_HIGH:
+        return "HIGH";
+    case THRESHOLD_LOW:
+        return "LOW";
+    default:
+        return "UNKNOWN";
     }
 }
 
 static void debug_switch_event(const switch_state* ns, const rate_msg* m, tw_lp* lp) {
-    if (!cfg.debug) return;
+    if (!cfg.debug)
+        return;
 
     if (m->event_type == BUFFER_THRESHOLD) {
         std::printf("BUFFER THRESHOLD at switch %s at %.6f %s threshold=%s\n",
@@ -697,44 +830,56 @@ static void debug_switch_event(const switch_state* ns, const rate_msg* m, tw_lp*
         std::fflush(stdout);
         return;
     }
-    std::printf("%s(F%llu) at switch %s at %.6f %s",
-                event_name(m->event_type), (unsigned long long)m->flow_id,
-                switches[ns->switch_id].name.c_str(),
+    std::printf("%s(F%llu) at switch %s at %.6f %s", event_name(m->event_type),
+                (unsigned long long)m->flow_id, switches[ns->switch_id].name.c_str(),
                 seconds_to_output_time(ns_to_seconds(tw_now(lp))), time_unit_name());
     if (m->event_type == FLOW_REGISTER || m->event_type == DATA_RATE_UPDATE ||
         m->event_type == RATE_FEEDBACK)
         std::printf(" rate=%.6f %s", m->rate, rate_unit_name());
     if (m->event_type == PAUSE_UPDATE)
         std::printf(" state=%s", m->pause_asserted ? "PAUSE" : "RESUME");
-    std::printf("\n"); std::fflush(stdout);
+    std::printf("\n");
+    std::fflush(stdout);
 }
 
 static int find_switch_flow(const switch_state* ns, unsigned long long id) {
-    for (int i = 0; i < ns->flow_count; ++i) if (ns->flows[i].valid && ns->flows[i].flow_id == id) return i;
+    for (int i = 0; i < ns->flow_count; ++i)
+        if (ns->flows[i].valid && ns->flows[i].flow_id == id)
+            return i;
     return -1;
 }
 static int find_terminal_flow(const terminal_state* ns, unsigned long long id) {
-    for (int i = 0; i < ns->flow_count; ++i) if (ns->flows[i].valid && ns->flows[i].flow_id == id) return i;
+    for (int i = 0; i < ns->flow_count; ++i)
+        if (ns->flows[i].valid && ns->flows[i].flow_id == id)
+            return i;
     return -1;
 }
 static int find_switch_port_to_switch(const switch_state* ns, int dst) {
-    for (int p = 0; p < ns->num_ports; ++p) if (!ns->ports[p].is_terminal && ns->ports[p].target_index == dst) return p;
+    for (int p = 0; p < ns->num_ports; ++p)
+        if (!ns->ports[p].is_terminal && ns->ports[p].target_index == dst)
+            return p;
     return -1;
 }
 static int find_switch_port_to_terminal(const switch_state* ns, int dst) {
-    for (int p = 0; p < ns->num_ports; ++p) if (ns->ports[p].is_terminal && ns->ports[p].target_index == dst) return p;
+    for (int p = 0; p < ns->num_ports; ++p)
+        if (ns->ports[p].is_terminal && ns->ports[p].target_index == dst)
+            return p;
     return -1;
 }
 
 static int output_port_for_destination(const switch_state* ns, int destination_terminal) {
     int dst_sw = terminals[destination_terminal].switch_id;
-    if (dst_sw == ns->switch_id) return find_switch_port_to_terminal(ns, destination_terminal);
+    if (dst_sw == ns->switch_id)
+        return find_switch_port_to_terminal(ns, destination_terminal);
     int next = next_switch_table[ns->switch_id][dst_sw];
     return next < 0 ? -1 : find_switch_port_to_switch(ns, next);
 }
 
 static double switch_buffer_total(const switch_state* ns) {
-    double q = 0.0; for (int i = 0; i < ns->flow_count; ++i) q += std::max(0.0, ns->flows[i].queued_data); return q;
+    double q = 0.0;
+    for (int i = 0; i < ns->flow_count; ++i)
+        q += std::max(0.0, ns->flows[i].queued_data);
+    return q;
 }
 
 static void snapshot_switch_for_rc(switch_state* ns, rate_msg* m) {
@@ -755,7 +900,8 @@ static void snapshot_switch_for_rc(switch_state* ns, rate_msg* m) {
         m->rc_prev_last_downstream_flow_event_arrival_ns[i] =
             ns->flows[i].last_downstream_flow_event_arrival_ns;
     }
-    for (int p = 0; p < ns->num_ports; ++p) m->rc_prev_port_paused[p] = ns->ports[p].paused;
+    for (int p = 0; p < ns->num_ports; ++p)
+        m->rc_prev_port_paused[p] = ns->ports[p].paused;
 }
 
 static void restore_switch_from_rc(switch_state* ns, rate_msg* m) {
@@ -775,28 +921,35 @@ static void restore_switch_from_rc(switch_state* ns, rate_msg* m) {
         ns->flows[i].last_downstream_flow_event_arrival_ns =
             m->rc_prev_last_downstream_flow_event_arrival_ns[i];
     }
-    for (int p = 0; p < ns->num_ports; ++p) ns->ports[p].paused = m->rc_prev_port_paused[p];
+    for (int p = 0; p < ns->num_ports; ++p)
+        ns->ports[p].paused = m->rc_prev_port_paused[p];
     if (m->rc_flow_created) {
         ns->flow_count = m->rc_prev_flow_count;
-        if (ns->flow_count < MAX_FLOWS_PER_LP) std::memset(&ns->flows[ns->flow_count], 0, sizeof(ns->flows[ns->flow_count]));
+        if (ns->flow_count < MAX_FLOWS_PER_LP)
+            std::memset(&ns->flows[ns->flow_count], 0, sizeof(ns->flows[ns->flow_count]));
     } else if (m->rc_flow_index >= 0) {
         ns->flows[m->rc_flow_index] = m->rc_switch_flow_before;
     }
 }
 
 static void advance_switch_state(switch_state* ns, tw_stime now_ns) {
-    if (now_ns <= ns->last_update_ns) { ns->last_update_ns = now_ns; return; }
+    if (now_ns <= ns->last_update_ns) {
+        ns->last_update_ns = now_ns;
+        return;
+    }
     const double occupancy_before = switch_buffer_total(ns);
     double dt = ns_to_seconds(now_ns - ns->last_update_ns);
     double additions[MAX_FLOWS_PER_LP] = {0.0};
     double total_positive_addition = 0.0;
     for (int i = 0; i < ns->flow_count; ++i) {
         switch_flow& f = ns->flows[i];
-        if (!f.valid) continue;
+        if (!f.valid)
+            continue;
         const double before = f.queued_data;
         double dq = rate_to_data_per_second(f.incoming_rate - f.outgoing_rate) * dt;
         f.queued_data += dq;
-        if (f.queued_data < EPS) f.queued_data = 0.0;
+        if (f.queued_data < EPS)
+            f.queued_data = 0.0;
         additions[i] = std::max(0.0, f.queued_data - before);
         total_positive_addition += additions[i];
     }
@@ -811,24 +964,25 @@ static void advance_switch_state(switch_state* ns, tw_stime now_ns) {
         ns->dropped_data += excess;
         if (total_positive_addition > EPS) {
             for (int i = 0; i < ns->flow_count; ++i) {
-                if (additions[i] <= EPS) continue;
+                if (additions[i] <= EPS)
+                    continue;
                 double remove = excess * (additions[i] / total_positive_addition);
                 ns->flows[i].queued_data = std::max(0.0, ns->flows[i].queued_data - remove);
             }
         } else if (total > EPS) {
             const double scale = ns->buffer_capacity / total;
-            for (int i = 0; i < ns->flow_count; ++i) ns->flows[i].queued_data *= scale;
+            for (int i = 0; i < ns->flow_count; ++i)
+                ns->flows[i].queued_data *= scale;
         }
     }
     ns->last_update_ns = now_ns;
     const double occupancy_after = switch_buffer_total(ns);
     ns->max_buffer_seen = std::max(ns->max_buffer_seen, occupancy_after);
     if (cfg.debug && std::fabs(occupancy_after - occupancy_before) > EPS) {
-        std::printf(
-            "BUFFER OCCUPANCY at switch %s at %.6f %s occupancy=%.6f %s capacity=%.6f %s\n",
-            switches[ns->switch_id].name.c_str(),
-            seconds_to_output_time(ns_to_seconds(now_ns)), time_unit_name(), occupancy_after,
-            data_unit_name(), ns->buffer_capacity, data_unit_name());
+        std::printf("BUFFER OCCUPANCY at switch %s at %.6f %s occupancy=%.6f %s capacity=%.6f %s\n",
+                    switches[ns->switch_id].name.c_str(),
+                    seconds_to_output_time(ns_to_seconds(now_ns)), time_unit_name(),
+                    occupancy_after, data_unit_name(), ns->buffer_capacity, data_unit_name());
         std::fflush(stdout);
     }
 }
@@ -843,20 +997,27 @@ static void maxmin_allocate(const std::vector<int>& idx, const std::vector<doubl
         double share = remaining / count;
         bool fixed_any = false;
         for (size_t j = 0; j < idx.size(); ++j) {
-            if (!active[j]) continue;
+            if (!active[j])
+                continue;
             if (demands[j] < share - EPS) {
                 (*alloc)[j] = std::max(0.0, demands[j]);
-                remaining -= (*alloc)[j]; active[j] = 0; --count; fixed_any = true;
+                remaining -= (*alloc)[j];
+                active[j] = 0;
+                --count;
+                fixed_any = true;
             }
         }
         if (!fixed_any) {
-            for (size_t j = 0; j < idx.size(); ++j) if (active[j]) (*alloc)[j] = share;
+            for (size_t j = 0; j < idx.size(); ++j)
+                if (active[j])
+                    (*alloc)[j] = share;
             break;
         }
     }
 }
 
-static void schedule_event(tw_lpid gid, int type, const rate_msg& src, double delay_seconds, tw_lp* lp) {
+static void schedule_event(tw_lpid gid, int type, const rate_msg& src, double delay_seconds,
+                           tw_lp* lp) {
     double delay_ns = std::max(seconds_to_ns(delay_seconds), g_tw_lookahead + 1.0);
     tw_event* e = tw_event_new(gid, delay_ns, lp);
     rate_msg* m = (rate_msg*)tw_event_data(e);
@@ -885,8 +1046,8 @@ static void schedule_event(tw_lpid gid, int type, const rate_msg& src, double de
  * generation order at the receiver.
  */
 static void schedule_ordered_flow_event(tw_lpid gid, int type, const rate_msg& src,
-                                        double physical_delay_seconds,
-                                        tw_stime* last_arrival_ns, tw_lp* lp) {
+                                        double physical_delay_seconds, tw_stime* last_arrival_ns,
+                                        tw_lp* lp) {
     const double physical_delay_ns =
         std::max(seconds_to_ns(physical_delay_seconds), g_tw_lookahead + 1.0);
     tw_stime target = tw_now(lp) + physical_delay_ns;
@@ -897,63 +1058,81 @@ static void schedule_ordered_flow_event(tw_lpid gid, int type, const rate_msg& s
 }
 
 static void send_rate_feedback_upstream(switch_state* ns, switch_flow& f, double rate, tw_lp* lp) {
-    rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
-    out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id; out.rate = rate;
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.source_switch = ns->switch_id;
+    out.rate = rate;
     out.total_data = f.total_data;
-    tw_lpid gid = f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer) : get_switch_gid(f.ingress_peer);
+    tw_lpid gid =
+        f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer) : get_switch_gid(f.ingress_peer);
     schedule_ordered_flow_event(gid, RATE_FEEDBACK, out, cfg.link_latency_seconds,
                                 &f.last_upstream_flow_event_arrival_ns, lp);
 }
 
 static void send_data_update_downstream(switch_state* ns, switch_flow& f, double rate, tw_lp* lp) {
     const port_desc& p = ns->ports[f.port_id];
-    rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
-    out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id; out.rate = rate;
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.source_switch = ns->switch_id;
+    out.rate = rate;
     out.total_data = f.total_data;
     tw_lpid gid = p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
 
-    schedule_ordered_flow_event(
-        gid, DATA_RATE_UPDATE, out, cfg.link_latency_seconds,
-        &f.last_downstream_flow_event_arrival_ns, lp);
+    schedule_ordered_flow_event(gid, DATA_RATE_UPDATE, out, cfg.link_latency_seconds,
+                                &f.last_downstream_flow_event_arrival_ns, lp);
 }
 
 static void recompute_switch(switch_state* ns, tw_lp* lp, bool emit,
                              int registering_flow_index = -1) {
     for (int p = 0; p < ns->num_ports; ++p) {
-        std::vector<int> ids; std::vector<double> control_demands;
+        std::vector<int> ids;
+        std::vector<double> control_demands;
         for (int i = 0; i < ns->flow_count; ++i) {
             switch_flow& f = ns->flows[i];
-            if (!f.valid || f.port_id != p || f.source_closed) continue;
+            if (!f.valid || f.port_id != p || f.source_closed)
+                continue;
             ids.push_back(i);
-            const double downstream_cap =
-                f.downstream_ready ? f.downstream_cap_rate : INF_RATE;
+            const double downstream_cap = f.downstream_ready ? f.downstream_cap_rate : INF_RATE;
             control_demands.push_back(std::min(f.path_cap_rate, downstream_cap));
         }
         std::vector<double> control_alloc;
         maxmin_allocate(ids, control_demands, ns->ports[p].capacity_rate, &control_alloc);
         for (size_t j = 0; j < ids.size(); ++j) {
             switch_flow& f = ns->flows[ids[j]];
-            double old = f.control_rate, now = control_alloc[j]; f.control_rate = now;
+            double old = f.control_rate, now = control_alloc[j];
+            f.control_rate = now;
             if (emit && std::fabs(now - old) > EPS)
                 send_rate_feedback_upstream(ns, f, now, lp);
         }
 
-        ids.clear(); std::vector<double> actual_demands;
+        ids.clear();
+        std::vector<double> actual_demands;
         if (!ns->ports[p].paused) {
             for (int i = 0; i < ns->flow_count; ++i) {
                 switch_flow& f = ns->flows[i];
-                if (!f.valid || f.port_id != p || f.pause_received) continue;
+                if (!f.valid || f.port_id != p || f.pause_received)
+                    continue;
                 double demand = f.queued_data > EPS ? INF_RATE : std::max(0.0, f.incoming_rate);
-                if (demand <= EPS) continue;
-                ids.push_back(i); actual_demands.push_back(demand);
+                if (demand <= EPS)
+                    continue;
+                ids.push_back(i);
+                actual_demands.push_back(demand);
             }
         }
         std::vector<double> actual_alloc;
-        maxmin_allocate(ids, actual_demands, ns->ports[p].paused ? 0.0 : ns->ports[p].capacity_rate, &actual_alloc);
+        maxmin_allocate(ids, actual_demands, ns->ports[p].paused ? 0.0 : ns->ports[p].capacity_rate,
+                        &actual_alloc);
         std::map<int, double> new_rate;
-        for (size_t j = 0; j < ids.size(); ++j) new_rate[ids[j]] = actual_alloc[j];
+        for (size_t j = 0; j < ids.size(); ++j)
+            new_rate[ids[j]] = actual_alloc[j];
         for (int i = 0; i < ns->flow_count; ++i) {
-            switch_flow& f = ns->flows[i]; if (!f.valid || f.port_id != p) continue;
+            switch_flow& f = ns->flows[i];
+            if (!f.valid || f.port_id != p)
+                continue;
             double old = f.outgoing_rate;
             double now = new_rate.count(i) ? new_rate[i] : 0.0;
             f.outgoing_rate = now;
@@ -974,13 +1153,16 @@ static void schedule_next_threshold(switch_state* ns, tw_lp* lp) {
      * threshold.  Keep it separate so BUFFER_THRESHOLD means only HIGH/LOW. */
     for (int i = 0; i < ns->flow_count; ++i) {
         const switch_flow& f = ns->flows[i];
-        if (!f.valid) continue;
+        if (!f.valid)
+            continue;
         const double dq = rate_to_data_per_second(f.incoming_rate - f.outgoing_rate);
         total_dq += dq;
         if (f.queued_data > EPS && dq < -EPS) {
             const double t = f.queued_data / (-dq);
             if (t < best) {
-                best = t; event_type = QUEUE_DRAIN; queue_flow_index = i;
+                best = t;
+                event_type = QUEUE_DRAIN;
+                queue_flow_index = i;
                 threshold_kind = THRESHOLD_NONE;
             }
         }
@@ -990,20 +1172,27 @@ static void schedule_next_threshold(switch_state* ns, tw_lp* lp) {
         total_q < ns->high_watermark - EPS) {
         const double t = (ns->high_watermark - total_q) / total_dq;
         if (t < best) {
-            best = t; event_type = BUFFER_THRESHOLD;
-            threshold_kind = THRESHOLD_HIGH; queue_flow_index = -1;
+            best = t;
+            event_type = BUFFER_THRESHOLD;
+            threshold_kind = THRESHOLD_HIGH;
+            queue_flow_index = -1;
         }
     }
     if (cfg.pause_enabled && ns->pause_active && total_dq < -EPS &&
         total_q > ns->low_watermark + EPS) {
         const double t = (total_q - ns->low_watermark) / (-total_dq);
         if (t < best) {
-            best = t; event_type = BUFFER_THRESHOLD;
-            threshold_kind = THRESHOLD_LOW; queue_flow_index = -1;
+            best = t;
+            event_type = BUFFER_THRESHOLD;
+            threshold_kind = THRESHOLD_LOW;
+            queue_flow_index = -1;
         }
     }
 
-    if (!std::isfinite(best)) { ns->next_threshold_ns = -1.0; return; }
+    if (!std::isfinite(best)) {
+        ns->next_threshold_ns = -1.0;
+        return;
+    }
     const tw_stime target = tw_now(lp) + std::max(seconds_to_ns(best), g_tw_lookahead + 1.0);
     ns->next_threshold_ns = target;
     rate_msg out{};
@@ -1023,20 +1212,24 @@ static void send_pause_upstream(switch_state* ns, switch_flow& f, int asserted, 
     out.pause_asserted = asserted;
     out.pause_source_switch = ns->switch_id;
     out.total_data = f.total_data;
-    const tw_lpid gid = f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer)
-                                               : get_switch_gid(f.ingress_peer);
+    const tw_lpid gid =
+        f.ingress_is_terminal ? get_terminal_gid(f.ingress_peer) : get_switch_gid(f.ingress_peer);
     schedule_ordered_flow_event(gid, PAUSE_UPDATE, out, cfg.link_latency_seconds,
                                 &f.last_upstream_flow_event_arrival_ns, lp);
 }
 
 static void pause_high_rate_contributors(switch_state* ns, tw_lp* lp) {
     double total_dq = 0.0;
-    struct candidate { int index; double rate; };
+    struct candidate {
+        int index;
+        double rate;
+    };
     std::vector<candidate> candidates;
 
     for (int i = 0; i < ns->flow_count; ++i) {
         switch_flow& f = ns->flows[i];
-        if (!f.valid) continue;
+        if (!f.valid)
+            continue;
         total_dq += rate_to_data_per_second(f.incoming_rate - f.outgoing_rate);
         if (!f.source_closed && !f.pause_sent && f.incoming_rate > EPS)
             candidates.push_back({i, f.incoming_rate});
@@ -1046,7 +1239,8 @@ static void pause_high_rate_contributors(switch_state* ns, tw_lp* lp) {
 
     double remaining_growth = total_dq;
     for (const candidate& c : candidates) {
-        if (remaining_growth <= EPS) break;
+        if (remaining_growth <= EPS)
+            break;
         switch_flow& f = ns->flows[c.index];
         f.pause_sent = 1;
         send_pause_upstream(ns, f, 1, lp);
@@ -1057,7 +1251,8 @@ static void pause_high_rate_contributors(switch_state* ns, tw_lp* lp) {
 static void resume_paused_contributors(switch_state* ns, tw_lp* lp) {
     for (int i = 0; i < ns->flow_count; ++i) {
         switch_flow& f = ns->flows[i];
-        if (!f.valid || !f.pause_sent) continue;
+        if (!f.valid || !f.pause_sent)
+            continue;
         f.pause_sent = 0;
         send_pause_upstream(ns, f, 0, lp);
     }
@@ -1065,8 +1260,11 @@ static void resume_paused_contributors(switch_state* ns, tw_lp* lp) {
 
 static void forward_flow_complete(switch_state* ns, switch_flow& f, tw_lp* lp) {
     const port_desc& p = ns->ports[f.port_id];
-    rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal;
-    out.destination_terminal = f.destination_terminal; out.source_switch = ns->switch_id;
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.source_switch = ns->switch_id;
     out.total_data = f.total_data;
     tw_lpid gid = p.is_terminal ? get_terminal_gid(p.target_index) : get_switch_gid(p.target_index);
     schedule_ordered_flow_event(gid, FLOW_COMPLETE, out, cfg.link_latency_seconds,
@@ -1080,31 +1278,53 @@ static void switch_init(switch_state* ns, tw_lp* lp) {
     ns->buffer_capacity = sw.switch_buffer;
     ns->high_watermark = ns->buffer_capacity * cfg.pause_high_watermark_fraction;
     ns->low_watermark = ns->buffer_capacity * cfg.pause_low_watermark_fraction;
-    ns->next_threshold_ns = -1.0; ns->last_update_ns = 0.0;
+    ns->next_threshold_ns = -1.0;
+    ns->last_update_ns = 0.0;
     for (const auto& l : sw.links) {
-        port_desc& p = ns->ports[ns->num_ports++]; p.is_terminal = 0; p.target_index = l.dst_switch; p.capacity_rate = l.bandwidth;
+        port_desc& p = ns->ports[ns->num_ports++];
+        p.is_terminal = 0;
+        p.target_index = l.dst_switch;
+        p.capacity_rate = l.bandwidth;
     }
     for (int j = 0; j < sw.terminal_count; ++j) {
-        port_desc& p = ns->ports[ns->num_ports++]; p.is_terminal = 1; p.target_index = sw.terminal_start + j; p.capacity_rate = sw.terminal_bandwidth;
-        ingress_desc& in = ns->ingress[ns->num_ingress++]; in.is_terminal = 1; in.peer_index = sw.terminal_start + j;
+        port_desc& p = ns->ports[ns->num_ports++];
+        p.is_terminal = 1;
+        p.target_index = sw.terminal_start + j;
+        p.capacity_rate = sw.terminal_bandwidth;
+        ingress_desc& in = ns->ingress[ns->num_ingress++];
+        in.is_terminal = 1;
+        in.peer_index = sw.terminal_start + j;
     }
     for (int u = 0; u < (int)switches.size(); ++u) {
-        for (const auto& l : switches[u].links) if (l.dst_switch == ns->switch_id) {
-            ingress_desc& in = ns->ingress[ns->num_ingress++]; in.is_terminal = 0; in.peer_index = u; break;
-        }
+        for (const auto& l : switches[u].links)
+            if (l.dst_switch == ns->switch_id) {
+                ingress_desc& in = ns->ingress[ns->num_ingress++];
+                in.is_terminal = 0;
+                in.peer_index = u;
+                break;
+            }
     }
 }
 
 static int create_switch_flow(switch_state* ns, const rate_msg* m) {
-    if (ns->flow_count >= MAX_FLOWS_PER_LP) tw_error(TW_LOC, "switch %d exceeded MAX_FLOWS_PER_LP", ns->switch_id);
-    int i = ns->flow_count++; switch_flow& f = ns->flows[i]; std::memset(&f, 0, sizeof(f));
-    f.valid = 1; f.flow_id = m->flow_id; f.source_terminal = m->source_terminal; f.destination_terminal = m->destination_terminal;
+    if (ns->flow_count >= MAX_FLOWS_PER_LP)
+        tw_error(TW_LOC, "switch %d exceeded MAX_FLOWS_PER_LP", ns->switch_id);
+    int i = ns->flow_count++;
+    switch_flow& f = ns->flows[i];
+    std::memset(&f, 0, sizeof(f));
+    f.valid = 1;
+    f.flow_id = m->flow_id;
+    f.source_terminal = m->source_terminal;
+    f.destination_terminal = m->destination_terminal;
     f.total_data = m->total_data;
     f.last_upstream_flow_event_arrival_ns = -1.0;
     f.last_downstream_flow_event_arrival_ns = -1.0;
-    f.ingress_is_terminal = (m->source_switch < 0); f.ingress_peer = f.ingress_is_terminal ? m->source_terminal : m->source_switch;
+    f.ingress_is_terminal = (m->source_switch < 0);
+    f.ingress_peer = f.ingress_is_terminal ? m->source_terminal : m->source_switch;
     f.port_id = output_port_for_destination(ns, m->destination_terminal);
-    if (f.port_id < 0) tw_error(TW_LOC, "switch %d has no route to terminal %d", ns->switch_id, m->destination_terminal);
+    if (f.port_id < 0)
+        tw_error(TW_LOC, "switch %d has no route to terminal %d", ns->switch_id,
+                 m->destination_terminal);
     f.path_cap_rate = m->path_cap_rate > EPS ? m->path_cap_rate : INF_RATE;
     f.incoming_rate = std::max(0.0, m->rate);
     f.downstream_ready = 0;
@@ -1121,15 +1341,21 @@ static int create_switch_flow(switch_state* ns, const rate_msg* m) {
 }
 
 static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
-    m->rc_noop = 0; m->rc_flow_index = -1; m->rc_flow_created = 0;
+    m->rc_noop = 0;
+    m->rc_flow_index = -1;
+    m->rc_flow_created = 0;
     snapshot_switch_for_rc(ns, m);
     advance_switch_state(ns, tw_now(lp));
     debug_switch_event(ns, m, lp);
 
     if (m->event_type == FLOW_REGISTER) {
         int i = find_switch_flow(ns, m->flow_id);
-        if (i < 0) { i = create_switch_flow(ns, m); m->rc_flow_created = 1; }
-        m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
+        if (i < 0) {
+            i = create_switch_flow(ns, m);
+            m->rc_flow_created = 1;
+        }
+        m->rc_flow_index = i;
+        m->rc_switch_flow_before = ns->flows[i];
         switch_flow& f = ns->flows[i];
         recompute_switch(ns, lp, true, i);
         const port_desc& p = ns->ports[f.port_id];
@@ -1149,19 +1375,28 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         schedule_ordered_flow_event(gid, FLOW_REGISTER, out, cfg.link_latency_seconds,
                                     &f.last_downstream_flow_event_arrival_ns, lp);
     } else if (m->event_type == RATE_FEEDBACK) {
-        int i = find_switch_flow(ns, m->flow_id); if (i < 0) tw_error(TW_LOC, "RATE_FEEDBACK for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
-        ns->flows[i].downstream_ready = 1; ns->flows[i].downstream_cap_rate = std::max(0.0, m->rate);
+        int i = find_switch_flow(ns, m->flow_id);
+        if (i < 0)
+            tw_error(TW_LOC, "RATE_FEEDBACK for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_switch_flow_before = ns->flows[i];
+        ns->flows[i].downstream_ready = 1;
+        ns->flows[i].downstream_cap_rate = std::max(0.0, m->rate);
         recompute_switch(ns, lp, true);
     } else if (m->event_type == DATA_RATE_UPDATE) {
-        int i = find_switch_flow(ns, m->flow_id); if (i < 0) tw_error(TW_LOC, "DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
+        int i = find_switch_flow(ns, m->flow_id);
+        if (i < 0)
+            tw_error(TW_LOC, "DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_switch_flow_before = ns->flows[i];
         ns->flows[i].incoming_rate = std::max(0.0, m->rate);
         recompute_switch(ns, lp, true);
     } else if (m->event_type == PAUSE_UPDATE) {
         int i = find_switch_flow(ns, m->flow_id);
-        if (i < 0) tw_error(TW_LOC, "PAUSE_UPDATE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
+        if (i < 0)
+            tw_error(TW_LOC, "PAUSE_UPDATE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_switch_flow_before = ns->flows[i];
         switch_flow& f = ns->flows[i];
         f.pause_received = m->pause_asserted ? 1 : 0;
         recompute_switch(ns, lp, true);
@@ -1202,8 +1437,11 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
 
         recompute_switch(ns, lp, true);
     } else if (m->event_type == FLOW_COMPLETE) {
-        int i = find_switch_flow(ns, m->flow_id); if (i < 0) tw_error(TW_LOC, "FLOW_COMPLETE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_switch_flow_before = ns->flows[i];
+        int i = find_switch_flow(ns, m->flow_id);
+        if (i < 0)
+            tw_error(TW_LOC, "FLOW_COMPLETE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_switch_flow_before = ns->flows[i];
         ns->flows[i].source_closed = 1;
         recompute_switch(ns, lp, true);
         forward_flow_complete(ns, ns->flows[i], lp);
@@ -1214,59 +1452,95 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
 }
 
 static void switch_rev_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp*) {
-    if (m->rc_noop) return;
+    if (m->rc_noop)
+        return;
     restore_switch_from_rc(ns, m);
 }
 
 static void switch_finalize(switch_state* ns, tw_lp*) {
-    if (cfg.debug) std::printf("FINAL switch %s max_buffer=%.6f %s dropped=%.6f %s\n", switches[ns->switch_id].name.c_str(), ns->max_buffer_seen, data_unit_name(), ns->dropped_data, data_unit_name());
+    if (cfg.debug)
+        std::printf("FINAL switch %s max_buffer=%.6f %s dropped=%.6f %s\n",
+                    switches[ns->switch_id].name.c_str(), ns->max_buffer_seen, data_unit_name(),
+                    ns->dropped_data, data_unit_name());
 }
 
 static void advance_source_flow(terminal_flow& f, tw_stime now) {
-    if (now <= f.last_source_update_ns) { f.last_source_update_ns = now; return; }
+    if (now <= f.last_source_update_ns) {
+        f.last_source_update_ns = now;
+        return;
+    }
     double dt = ns_to_seconds(now - f.last_source_update_ns);
     f.remaining_data -= rate_to_data_per_second(f.send_rate) * dt;
-    if (f.remaining_data < EPS) f.remaining_data = 0.0;
+    if (f.remaining_data < EPS)
+        f.remaining_data = 0.0;
     f.last_source_update_ns = now;
 }
 static void advance_dest_flow(terminal_flow& f, tw_stime now) {
-    if (now <= f.last_dest_update_ns) { f.last_dest_update_ns = now; return; }
+    if (now <= f.last_dest_update_ns) {
+        f.last_dest_update_ns = now;
+        return;
+    }
     double dt = ns_to_seconds(now - f.last_dest_update_ns);
     f.received_data += rate_to_data_per_second(f.receive_rate) * dt;
-    if (f.received_data > f.total_data && f.received_data - f.total_data < 1e-6) f.received_data = f.total_data;
+    if (f.received_data > f.total_data && f.received_data - f.total_data < 1e-6)
+        f.received_data = f.total_data;
     f.last_dest_update_ns = now;
 }
 
 static int create_terminal_flow(terminal_state* ns, const rate_msg* m, tw_stime now) {
-    if (ns->flow_count >= MAX_FLOWS_PER_LP) tw_error(TW_LOC, "terminal %d exceeded MAX_FLOWS_PER_LP", ns->terminal_id);
-    int i = ns->flow_count++; terminal_flow& f = ns->flows[i]; std::memset(&f, 0, sizeof(f));
-    f.valid = 1; f.flow_id = m->flow_id; f.source_terminal = m->source_terminal; f.destination_terminal = m->destination_terminal;
-    f.total_data = m->total_data; f.remaining_data = m->total_data; f.start_ns = now; f.last_source_update_ns = now; f.last_dest_update_ns = now;
-    f.predicted_complete_ns = -1.0; f.finish_ns = -1.0;
+    if (ns->flow_count >= MAX_FLOWS_PER_LP)
+        tw_error(TW_LOC, "terminal %d exceeded MAX_FLOWS_PER_LP", ns->terminal_id);
+    int i = ns->flow_count++;
+    terminal_flow& f = ns->flows[i];
+    std::memset(&f, 0, sizeof(f));
+    f.valid = 1;
+    f.flow_id = m->flow_id;
+    f.source_terminal = m->source_terminal;
+    f.destination_terminal = m->destination_terminal;
+    f.total_data = m->total_data;
+    f.remaining_data = m->total_data;
+    f.start_ns = now;
+    f.last_source_update_ns = now;
+    f.last_dest_update_ns = now;
+    f.predicted_complete_ns = -1.0;
+    f.finish_ns = -1.0;
     f.last_downstream_flow_event_arrival_ns = -1.0;
     return i;
 }
 
 static void send_source_data_rate(terminal_state* ns, terminal_flow& f, double rate, tw_lp* lp) {
-    rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal; out.destination_terminal = f.destination_terminal;
-    out.source_switch = -1; out.rate = rate; out.total_data = f.total_data;
-    schedule_ordered_flow_event(
-        get_switch_gid(ns->attached_switch), DATA_RATE_UPDATE, out, cfg.link_latency_seconds,
-        &f.last_downstream_flow_event_arrival_ns, lp);
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.source_switch = -1;
+    out.rate = rate;
+    out.total_data = f.total_data;
+    schedule_ordered_flow_event(get_switch_gid(ns->attached_switch), DATA_RATE_UPDATE, out,
+                                cfg.link_latency_seconds, &f.last_downstream_flow_event_arrival_ns,
+                                lp);
 }
 
 static void schedule_source_completion(terminal_flow& f, tw_lp* lp) {
-    if (f.source_complete || f.send_rate <= EPS || f.remaining_data <= EPS) { f.predicted_complete_ns = -1.0; return; }
+    if (f.source_complete || f.send_rate <= EPS || f.remaining_data <= EPS) {
+        f.predicted_complete_ns = -1.0;
+        return;
+    }
     double seconds = f.remaining_data / rate_to_data_per_second(f.send_rate);
     tw_stime target = tw_now(lp) + std::max(seconds_to_ns(seconds), g_tw_lookahead + 1.0);
     f.predicted_complete_ns = target;
-    rate_msg out{}; out.flow_id = f.flow_id; out.source_terminal = f.source_terminal; out.destination_terminal = f.destination_terminal;
-    out.total_data = f.total_data; out.expected_time_ns = target;
+    rate_msg out{};
+    out.flow_id = f.flow_id;
+    out.source_terminal = f.source_terminal;
+    out.destination_terminal = f.destination_terminal;
+    out.total_data = f.total_data;
+    out.expected_time_ns = target;
     schedule_event(lp->gid, FLOW_COMPLETE, out, ns_to_seconds(target - tw_now(lp)), lp);
 }
 
 static void complete_source_flow(terminal_state* ns, terminal_flow& f, tw_lp* lp) {
-    if (f.source_complete) return;
+    if (f.source_complete)
+        return;
     f.remaining_data = 0.0;
     f.source_complete = 1;
     f.predicted_complete_ns = -1.0;
@@ -1279,14 +1553,15 @@ static void complete_source_flow(terminal_state* ns, terminal_flow& f, tw_lp* lp
     out.source_terminal = f.source_terminal;
     out.destination_terminal = f.destination_terminal;
     out.total_data = f.total_data;
-    schedule_ordered_flow_event(
-        get_switch_gid(ns->attached_switch), FLOW_COMPLETE, out, cfg.link_latency_seconds,
-        &f.last_downstream_flow_event_arrival_ns, lp);
+    schedule_ordered_flow_event(get_switch_gid(ns->attached_switch), FLOW_COMPLETE, out,
+                                cfg.link_latency_seconds, &f.last_downstream_flow_event_arrival_ns,
+                                lp);
 }
 
 static void maybe_mark_destination_complete(terminal_flow& f, tw_stime now) {
     if (!f.destination_complete && f.close_received && f.receive_rate <= EPS) {
-        f.destination_complete = 1; f.finish_ns = now;
+        f.destination_complete = 1;
+        f.finish_ns = now;
     }
 }
 
@@ -1295,23 +1570,36 @@ static void terminal_init(terminal_state* ns, tw_lp* lp) {
     ns->terminal_id = codes_mapping_get_lp_relative_id(lp->gid, 0, 0);
     ns->attached_switch = terminals[ns->terminal_id].switch_id;
     for (const auto& spec : flow_specs) {
-        if (spec.source_terminal != ns->terminal_id) continue;
+        if (spec.source_terminal != ns->terminal_id)
+            continue;
         double delay = spec.start_seconds - ns_to_seconds(tw_now(lp));
-        if (delay < 0.0) delay = 0.0;
-        rate_msg out{}; out.flow_id = spec.flow_id; out.source_terminal = spec.source_terminal;
-        out.destination_terminal = spec.destination_terminal; out.total_data = spec.size_data;
+        if (delay < 0.0)
+            delay = 0.0;
+        rate_msg out{};
+        out.flow_id = spec.flow_id;
+        out.source_terminal = spec.source_terminal;
+        out.destination_terminal = spec.destination_terminal;
+        out.total_data = spec.size_data;
         schedule_event(lp->gid, FLOW_START, out, delay, lp);
     }
 }
 
 static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
-    m->rc_noop = 0; m->rc_flow_index = -1; m->rc_flow_created = 0; m->rc_prev_flow_count = ns->flow_count;
+    m->rc_noop = 0;
+    m->rc_flow_index = -1;
+    m->rc_flow_created = 0;
+    m->rc_prev_flow_count = ns->flow_count;
     debug_terminal_event(ns, m, lp);
     int i = find_terminal_flow(ns, m->flow_id);
 
     if (m->event_type == FLOW_START) {
-        if (i >= 0) { m->rc_noop = 1; return; }
-        i = create_terminal_flow(ns, m, tw_now(lp)); m->rc_flow_created = 1; m->rc_flow_index = i;
+        if (i >= 0) {
+            m->rc_noop = 1;
+            return;
+        }
+        i = create_terminal_flow(ns, m, tw_now(lp));
+        m->rc_flow_created = 1;
+        m->rc_flow_index = i;
         terminal_flow& f = ns->flows[i];
         const double initial_rate = switches[ns->attached_switch].terminal_bandwidth;
         f.allowed_rate = initial_rate;
@@ -1321,25 +1609,33 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         out.source_switch = -1;
         out.rate = initial_rate;
         out.path_cap_rate = initial_rate;
-        schedule_ordered_flow_event(
-            get_switch_gid(ns->attached_switch), FLOW_REGISTER, out, cfg.link_latency_seconds,
-            &f.last_downstream_flow_event_arrival_ns, lp);
+        schedule_ordered_flow_event(get_switch_gid(ns->attached_switch), FLOW_REGISTER, out,
+                                    cfg.link_latency_seconds,
+                                    &f.last_downstream_flow_event_arrival_ns, lp);
         schedule_source_completion(f, lp);
     } else if (m->event_type == RATE_FEEDBACK) {
-        if (i < 0) tw_error(TW_LOC, "terminal RATE_FEEDBACK for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
-        terminal_flow& f = ns->flows[i]; advance_source_flow(f, tw_now(lp));
+        if (i < 0)
+            tw_error(TW_LOC, "terminal RATE_FEEDBACK for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_terminal_flow_before = ns->flows[i];
+        terminal_flow& f = ns->flows[i];
+        advance_source_flow(f, tw_now(lp));
         if (!f.source_complete && f.remaining_data <= 1e-6) {
             complete_source_flow(ns, f, lp);
             return;
         }
         f.allowed_rate = std::max(0.0, m->rate);
         double new_rate = f.paused || f.source_complete ? 0.0 : f.allowed_rate;
-        if (std::fabs(new_rate - f.send_rate) > EPS) { f.send_rate = new_rate; send_source_data_rate(ns, f, new_rate, lp); }
+        if (std::fabs(new_rate - f.send_rate) > EPS) {
+            f.send_rate = new_rate;
+            send_source_data_rate(ns, f, new_rate, lp);
+        }
         schedule_source_completion(f, lp);
     } else if (m->event_type == PAUSE_UPDATE) {
-        if (i < 0) tw_error(TW_LOC, "terminal PAUSE_UPDATE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
+        if (i < 0)
+            tw_error(TW_LOC, "terminal PAUSE_UPDATE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
         if (!f.source_complete) {
             advance_source_flow(f, tw_now(lp));
@@ -1356,19 +1652,30 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             schedule_source_completion(f, lp);
         }
     } else if (m->event_type == FLOW_REGISTER) {
-        if (i < 0) { i = create_terminal_flow(ns, m, tw_now(lp)); m->rc_flow_created = 1; }
-        m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
+        if (i < 0) {
+            i = create_terminal_flow(ns, m, tw_now(lp));
+            m->rc_flow_created = 1;
+        }
+        m->rc_flow_index = i;
+        m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
         advance_dest_flow(f, tw_now(lp));
         f.receive_rate = std::max(0.0, m->rate);
         maybe_mark_destination_complete(f, tw_now(lp));
     } else if (m->event_type == DATA_RATE_UPDATE) {
-        if (i < 0) tw_error(TW_LOC, "terminal DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
-        terminal_flow& f = ns->flows[i]; advance_dest_flow(f, tw_now(lp)); f.receive_rate = std::max(0.0, m->rate); maybe_mark_destination_complete(f, tw_now(lp));
+        if (i < 0)
+            tw_error(TW_LOC, "terminal DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_terminal_flow_before = ns->flows[i];
+        terminal_flow& f = ns->flows[i];
+        advance_dest_flow(f, tw_now(lp));
+        f.receive_rate = std::max(0.0, m->rate);
+        maybe_mark_destination_complete(f, tw_now(lp));
     } else if (m->event_type == FLOW_COMPLETE) {
-        if (i < 0) tw_error(TW_LOC, "terminal FLOW_COMPLETE for unknown flow %llu", m->flow_id);
-        m->rc_flow_index = i; m->rc_terminal_flow_before = ns->flows[i];
+        if (i < 0)
+            tw_error(TW_LOC, "terminal FLOW_COMPLETE for unknown flow %llu", m->flow_id);
+        m->rc_flow_index = i;
+        m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
         if (ns->terminal_id == f.source_terminal) {
             if (f.source_complete) {
@@ -1376,11 +1683,16 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
                 return;
             }
             advance_source_flow(f, tw_now(lp));
-            if (m->expected_time_ns >= 0.0 && std::fabs((double)(m->expected_time_ns - f.predicted_complete_ns)) > 0.5) return;
-            if (f.remaining_data > 1e-6) return;
+            if (m->expected_time_ns >= 0.0 &&
+                std::fabs((double)(m->expected_time_ns - f.predicted_complete_ns)) > 0.5)
+                return;
+            if (f.remaining_data > 1e-6)
+                return;
             complete_source_flow(ns, f, lp);
         } else if (ns->terminal_id == f.destination_terminal) {
-            advance_dest_flow(f, tw_now(lp)); f.close_received = 1; maybe_mark_destination_complete(f, tw_now(lp));
+            advance_dest_flow(f, tw_now(lp));
+            f.close_received = 1;
+            maybe_mark_destination_complete(f, tw_now(lp));
         }
     } else {
         tw_error(TW_LOC, "terminal received unknown event %d", m->event_type);
@@ -1388,7 +1700,8 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
 }
 
 static void terminal_rev_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp*) {
-    if (m->rc_noop) return;
+    if (m->rc_noop)
+        return;
     if (m->rc_terminal_multi) {
         for (int k = 0; k < ns->flow_count; ++k) {
             ns->flows[k].remaining_data = m->rc_terminal_remaining[k];
@@ -1401,48 +1714,68 @@ static void terminal_rev_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp*) 
     }
     if (m->rc_flow_created) {
         ns->flow_count = m->rc_prev_flow_count;
-        if (ns->flow_count < MAX_FLOWS_PER_LP) std::memset(&ns->flows[ns->flow_count], 0, sizeof(ns->flows[ns->flow_count]));
+        if (ns->flow_count < MAX_FLOWS_PER_LP)
+            std::memset(&ns->flows[ns->flow_count], 0, sizeof(ns->flows[ns->flow_count]));
     } else if (m->rc_flow_index >= 0) {
         ns->flows[m->rc_flow_index] = m->rc_terminal_flow_before;
     }
 }
 
 static const flow_spec* find_flow_spec(unsigned long long id) {
-    for (const auto& f : flow_specs) if (f.flow_id == id) return &f;
+    for (const auto& f : flow_specs)
+        if (f.flow_id == id)
+            return &f;
     return nullptr;
 }
 
 static std::string rank_summary_path(int rank) {
-    std::ostringstream os; os << cfg.flow_summary_file << ".rank" << rank; return os.str();
+    std::ostringstream os;
+    os << cfg.flow_summary_file << ".rank" << rank;
+    return os.str();
 }
 
 static void terminal_finalize(terminal_state* ns, tw_lp*) {
     std::ofstream out(rank_summary_path(mpi_rank_global), std::ios::app);
-    if (!out) return;
+    if (!out)
+        return;
     for (int i = 0; i < ns->flow_count; ++i) {
         const terminal_flow& f = ns->flows[i];
-        if (!f.valid || f.destination_terminal != ns->terminal_id) continue;
+        if (!f.valid || f.destination_terminal != ns->terminal_id)
+            continue;
         const flow_spec* spec = find_flow_spec(f.flow_id);
-        if (!spec) continue;
+        if (!spec)
+            continue;
         const double finish_seconds = f.finish_ns >= 0.0 ? ns_to_seconds(f.finish_ns) : -1.0;
-        const double fct_seconds = finish_seconds >= 0.0 ? finish_seconds - spec->start_seconds : -1.0;
+        const double fct_seconds =
+            finish_seconds >= 0.0 ? finish_seconds - spec->start_seconds : -1.0;
         out << f.flow_id << ',' << f.source_terminal << ',' << f.destination_terminal << ','
             << seconds_to_output_time(spec->start_seconds) << ',' << spec->size_data << ','
             << (f.destination_complete ? 1 : 0) << ',' << f.received_data << ',';
         if (finish_seconds >= 0.0)
-            out << seconds_to_output_time(finish_seconds) << ',' << seconds_to_output_time(fct_seconds);
+            out << seconds_to_output_time(finish_seconds) << ','
+                << seconds_to_output_time(fct_seconds);
         else
             out << "NA,NA";
         out << '\n';
     }
 }
 
-static tw_lptype terminal_lp = { (init_f)terminal_init, nullptr, (event_f)terminal_event,
-                                  (revent_f)terminal_rev_event, nullptr, (final_f)terminal_finalize,
-                                  (map_f)codes_mapping, sizeof(terminal_state) };
-static tw_lptype switch_lp = { (init_f)switch_init, nullptr, (event_f)switch_event,
-                                (revent_f)switch_rev_event, nullptr, (final_f)switch_finalize,
-                                (map_f)codes_mapping, sizeof(switch_state) };
+static tw_lptype terminal_lp = {(init_f)terminal_init,
+                                nullptr,
+                                (event_f)terminal_event,
+                                (revent_f)terminal_rev_event,
+                                nullptr,
+                                (final_f)terminal_finalize,
+                                (map_f)codes_mapping,
+                                sizeof(terminal_state)};
+static tw_lptype switch_lp = {(init_f)switch_init,
+                              nullptr,
+                              (event_f)switch_event,
+                              (revent_f)switch_rev_event,
+                              nullptr,
+                              (final_f)switch_finalize,
+                              (map_f)codes_mapping,
+                              sizeof(switch_state)};
 
 static void add_lp_types() {
     lp_type_register(TERMINAL_LP_NAME, &terminal_lp);
@@ -1452,7 +1785,8 @@ static void add_lp_types() {
 
 static int configured_message_size() {
     int n = 0;
-    if (configuration_get_value_int(&config, "PARAMS", "message_size", nullptr, &n) != 0) return 0;
+    if (configuration_get_value_int(&config, "PARAMS", "message_size", nullptr, &n) != 0)
+        return 0;
     return n;
 }
 
@@ -1460,7 +1794,10 @@ static void validate_message_size(int rank) {
     int n = configured_message_size();
     if (n <= 0 || (size_t)n < sizeof(rate_msg)) {
         if (rank == 0)
-            std::fprintf(stderr, "rate-fluid-wan: PARAMS.message_size=%d but sizeof(rate_msg)=%zu; increase message_size\n", n, sizeof(rate_msg));
+            std::fprintf(stderr,
+                         "rate-fluid-wan: PARAMS.message_size=%d but sizeof(rate_msg)=%zu; "
+                         "increase message_size\n",
+                         n, sizeof(rate_msg));
         MPI_Abort(MPI_COMM_CODES, 1);
     }
 }
@@ -1488,19 +1825,22 @@ static void prepare_rank_summary_file() {
 
 static void merge_summary_files() {
     MPI_Barrier(MPI_COMM_CODES);
-    if (mpi_rank_global != 0) return;
+    if (mpi_rank_global != 0)
+        return;
     std::ofstream out(cfg.flow_summary_file, std::ios::trunc);
     if (!out) {
         std::fprintf(stderr, "could not write flow summary %s\n", cfg.flow_summary_file);
         return;
     }
-    out << "flow_id,source_terminal,destination_terminal,start_" << time_unit_name()
-        << ",size_" << data_unit_name() << ",completed,received_" << data_unit_name()
-        << ",finish_" << time_unit_name() << ",fct_" << time_unit_name() << "\n";
+    out << "flow_id,source_terminal,destination_terminal,start_" << time_unit_name() << ",size_"
+        << data_unit_name() << ",completed,received_" << data_unit_name() << ",finish_"
+        << time_unit_name() << ",fct_" << time_unit_name() << "\n";
     for (int rank = 0; rank < mpi_size_global; ++rank) {
         std::ifstream in(rank_summary_path(rank));
         std::string line;
-        while (std::getline(in, line)) if (!line.empty()) out << line << '\n';
+        while (std::getline(in, line))
+            if (!line.empty())
+                out << line << '\n';
         std::remove(rank_summary_path(rank).c_str());
     }
 }
@@ -1540,12 +1880,18 @@ int main(int argc, char** argv) {
         g_tw_ts_end = seconds_to_ns(60.0 * 60.0 * 24.0 * 365.0);
     total_switch_lps = codes_mapping_get_lp_count(GROUP_NAME, 0, SWITCH_LP_NAME, nullptr, 1);
     total_terminal_lps = codes_mapping_get_lp_count(GROUP_NAME, 0, TERMINAL_LP_NAME, nullptr, 1);
-    if (total_switch_lps != (int)switches.size()) tw_error(TW_LOC, "config has %d switch LPs; topology has %zu", total_switch_lps, switches.size());
-    if (total_terminal_lps != (int)terminals.size()) tw_error(TW_LOC, "config has %d terminal LPs; topology has %zu", total_terminal_lps, terminals.size());
+    if (total_switch_lps != (int)switches.size())
+        tw_error(TW_LOC, "config has %d switch LPs; topology has %zu", total_switch_lps,
+                 switches.size());
+    if (total_terminal_lps != (int)terminals.size())
+        tw_error(TW_LOC, "config has %d terminal LPs; topology has %zu", total_terminal_lps,
+                 terminals.size());
     if (rank == 0) {
-        std::printf("rate-fluid-wan: switches=%zu terminals=%zu flows=%zu latency=%.6f ms rate_unit=%s data_unit=%s time_unit=%s pause=%d debug=%d\n",
-                    switches.size(), terminals.size(), flow_specs.size(), cfg.link_latency_seconds * 1000.0,
-                    rate_unit_name(), data_unit_name(), time_unit_name(), cfg.pause_enabled, cfg.debug);
+        std::printf("rate-fluid-wan: switches=%zu terminals=%zu flows=%zu latency=%.6f ms "
+                    "rate_unit=%s data_unit=%s time_unit=%s pause=%d debug=%d\n",
+                    switches.size(), terminals.size(), flow_specs.size(),
+                    cfg.link_latency_seconds * 1000.0, rate_unit_name(), data_unit_name(),
+                    time_unit_name(), cfg.pause_enabled, cfg.debug);
     }
     prepare_rank_summary_file();
     MPI_Barrier(MPI_COMM_CODES);
