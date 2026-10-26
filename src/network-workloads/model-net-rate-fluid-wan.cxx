@@ -1346,7 +1346,6 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
     m->rc_flow_created = 0;
     snapshot_switch_for_rc(ns, m);
     advance_switch_state(ns, tw_now(lp));
-    debug_switch_event(ns, m, lp);
 
     if (m->event_type == FLOW_REGISTER) {
         int i = find_switch_flow(ns, m->flow_id);
@@ -1357,6 +1356,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_flow_index = i;
         m->rc_switch_flow_before = ns->flows[i];
         switch_flow& f = ns->flows[i];
+        debug_switch_event(ns, m, lp);
         recompute_switch(ns, lp, true, i);
         const port_desc& p = ns->ports[f.port_id];
 
@@ -1380,6 +1380,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             tw_error(TW_LOC, "RATE_FEEDBACK for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i;
         m->rc_switch_flow_before = ns->flows[i];
+        debug_switch_event(ns, m, lp);
         ns->flows[i].downstream_ready = 1;
         ns->flows[i].downstream_cap_rate = std::max(0.0, m->rate);
         recompute_switch(ns, lp, true);
@@ -1389,6 +1390,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             tw_error(TW_LOC, "DATA_RATE_UPDATE for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i;
         m->rc_switch_flow_before = ns->flows[i];
+        debug_switch_event(ns, m, lp);
         ns->flows[i].incoming_rate = std::max(0.0, m->rate);
         recompute_switch(ns, lp, true);
     } else if (m->event_type == PAUSE_UPDATE) {
@@ -1398,6 +1400,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_flow_index = i;
         m->rc_switch_flow_before = ns->flows[i];
         switch_flow& f = ns->flows[i];
+        debug_switch_event(ns, m, lp);
         f.pause_received = m->pause_asserted ? 1 : 0;
         recompute_switch(ns, lp, true);
         send_pause_upstream(ns, f, m->pause_asserted, lp);
@@ -1407,6 +1410,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             return;
         }
         ns->next_threshold_ns = -1.0;
+        debug_switch_event(ns, m, lp);
         if (m->threshold_kind == THRESHOLD_HIGH && !ns->pause_active) {
             ns->pause_active = 1;
             pause_high_rate_contributors(ns, lp);
@@ -1421,6 +1425,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             return;
         }
         ns->next_threshold_ns = -1.0;
+        debug_switch_event(ns, m, lp);
 
         /* A per-flow queue can drain at exactly the same instant that the
          * shared buffer reaches the PAUSE low watermark.  schedule_next_threshold()
@@ -1442,6 +1447,7 @@ static void switch_event(switch_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             tw_error(TW_LOC, "FLOW_COMPLETE for unknown flow %llu", m->flow_id);
         m->rc_flow_index = i;
         m->rc_switch_flow_before = ns->flows[i];
+        debug_switch_event(ns, m, lp);
         ns->flows[i].source_closed = 1;
         recompute_switch(ns, lp, true);
         forward_flow_complete(ns, ns->flows[i], lp);
@@ -1589,7 +1595,6 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
     m->rc_flow_index = -1;
     m->rc_flow_created = 0;
     m->rc_prev_flow_count = ns->flow_count;
-    debug_terminal_event(ns, m, lp);
     int i = find_terminal_flow(ns, m->flow_id);
 
     if (m->event_type == FLOW_START) {
@@ -1597,6 +1602,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
             m->rc_noop = 1;
             return;
         }
+        debug_terminal_event(ns, m, lp);
         i = create_terminal_flow(ns, m, tw_now(lp));
         m->rc_flow_created = 1;
         m->rc_flow_index = i;
@@ -1619,6 +1625,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_flow_index = i;
         m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
+        debug_terminal_event(ns, m, lp);
         advance_source_flow(f, tw_now(lp));
         if (!f.source_complete && f.remaining_data <= 1e-6) {
             complete_source_flow(ns, f, lp);
@@ -1638,6 +1645,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
         if (!f.source_complete) {
+            debug_terminal_event(ns, m, lp);
             advance_source_flow(f, tw_now(lp));
             if (f.remaining_data <= 1e-6) {
                 complete_source_flow(ns, f, lp);
@@ -1659,6 +1667,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_flow_index = i;
         m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
+        debug_terminal_event(ns, m, lp);
         advance_dest_flow(f, tw_now(lp));
         f.receive_rate = std::max(0.0, m->rate);
         maybe_mark_destination_complete(f, tw_now(lp));
@@ -1668,6 +1677,7 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
         m->rc_flow_index = i;
         m->rc_terminal_flow_before = ns->flows[i];
         terminal_flow& f = ns->flows[i];
+        debug_terminal_event(ns, m, lp);
         advance_dest_flow(f, tw_now(lp));
         f.receive_rate = std::max(0.0, m->rate);
         maybe_mark_destination_complete(f, tw_now(lp));
@@ -1688,8 +1698,10 @@ static void terminal_event(terminal_state* ns, tw_bf*, rate_msg* m, tw_lp* lp) {
                 return;
             if (f.remaining_data > 1e-6)
                 return;
+            debug_terminal_event(ns, m, lp);
             complete_source_flow(ns, f, lp);
         } else if (ns->terminal_id == f.destination_terminal) {
+            debug_terminal_event(ns, m, lp);
             advance_dest_flow(f, tw_now(lp));
             f.close_received = 1;
             maybe_mark_destination_complete(f, tw_now(lp));
